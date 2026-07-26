@@ -1,0 +1,10 @@
+---
+# Phase 40 — virt-install master+worker VMs  (TODO: implement — see README phase table)
+# virt-install {{ control_plane_count }} masters + {{ worker_count }} workers, boot from discovery ISO, sized per master_/worker_ vars.
+- name: Phase 40 — virt-install master+worker VMs
+  hosts: kvm_host
+  gather_facts: false
+  tasks:
+    - name: Not yet implemented
+      ansible.builtin.debug:
+        msg: "40-vms.yml is a stub — virt-install {{ control_plane_count }} masters + {{ worker_count }} workers, boot from discovery ISO, sized per master_/worker_ vars."

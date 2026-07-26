@@ -1,0 +1,10 @@
+---
+# Phase 50 — wait for host registration + validations  (TODO: implement — see README phase table)
+# Poll {{ assisted_base_url }}/clusters/{id}/hosts until all register and Assisted validations pass; surface failing validations.
+- name: Phase 50 — wait for host registration + validations
+  hosts: local
+  gather_facts: false
+  tasks:
+    - name: Not yet implemented
+      ansible.builtin.debug:
+        msg: "50-wait-hosts.yml is a stub — Poll {{ assisted_base_url }}/clusters/{id}/hosts until all register and Assisted validations pass; surface failing validations."

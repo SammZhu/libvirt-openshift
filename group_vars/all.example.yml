@@ -1,0 +1,59 @@
+---
+# Copy to group_vars/all.yml and edit. group_vars/all.yml is gitignored.
+
+# ── Cluster identity ─────────────────────────────────────────────────────────
+cluster_name:        ocp
+base_domain:         lab.example.com
+# ⚠️ Pin to a specific patch (X.Y.Z), NOT channel form (X.Y). Assisted resolves
+# channel form to "latest" at create time, which can drift from what your offline
+# mirror holds. The offline path asserts this is X.Y.Z.
+openshift_version:   "4.18.10"
+cpu_architecture:    x86_64
+
+# ── Topology (3 control-plane + N worker) ────────────────────────────────────
+# For SNO set control_plane_count=1, worker_count=0 (Assisted high_availability_mode=None).
+control_plane_count: 3
+worker_count:        2        # N
+
+# ── Connectivity switch (THE online/offline knob) ────────────────────────────
+# online  → SaaS Assisted API (api.openshift.com); needs OCM offline token.
+# offline → local assisted-service (podman on the KVM host); air-gap capable,
+#           needs mirrored release images + local RHCOS live ISO.
+connectivity:        online
+assisted_saas_url:   https://api.openshift.com/api/assisted-install/v2
+# Offline endpoint: local assisted-service on the KVM host (default port 8090).
+assisted_onprem_url: "http://{{ hostvars[groups['kvm_host'][0]].ansible_host | default('127.0.0.1') }}:8090/api/assisted-install/v2"
+sso_url:             https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
+
+# ── Network (multi-node Assisted brings its own keepalived VIPs — no external LB) ──
+machine_network_cidr: 192.168.126.0/24
+api_vip:              192.168.126.100
+ingress_vip:          192.168.126.101
+# DNS must be pre-provisioned (Phase 00 verifies):
+#   api.{{ cluster_name }}.{{ base_domain }}      A  {{ api_vip }}
+#   *.apps.{{ cluster_name }}.{{ base_domain }}   A  {{ ingress_vip }}
+
+# ── libvirt / VM sizing (Assisted host-validation minimums for control plane) ──
+libvirt_network:     ocp-net           # created by Phase 10 if absent
+libvirt_pool:        default           # storage pool for VM disks
+master_vcpu:         4
+master_ram_mib:      16384
+master_disk_gib:     120               # Assisted rejects install disk < 100 GB
+worker_vcpu:         4
+worker_ram_mib:      16384
+worker_disk_gib:     120
+
+# ── Files (resolved at runtime; never committed — see .gitignore) ────────────
+pull_secret_file:    "{{ lookup('env', 'HOME') }}/.pull-secret.json"
+ssh_pub_key_file:    "{{ lookup('env', 'HOME') }}/.ssh/id_rsa.pub"
+# offline token only needed for connectivity=online (from console.redhat.com):
+offline_token_file:  "{{ lookup('env', 'HOME') }}/.openshift/offline-token"
+
+# ── Output directory (kubeconfig, ISO, kubeadmin password) ───────────────────
+output_dir:          "{{ lookup('env', 'HOME') }}/openshift-install/{{ cluster_name }}"
+
+# ── Offline (connectivity=offline) extras ────────────────────────────────────
+# Local assisted-service + image-service must already be running (podman) and
+# release images mirrored into a local registry. See docs/RUNBOOK.md "Offline".
+rhcos_live_iso_path: "{{ lookup('env', 'HOME') }}/.openshift/rhcos-live.iso"
+local_registry:      ""                # e.g. registry.lab.example.com:5000

@@ -1,0 +1,10 @@
+---
+# Phase 20 — create Assisted cluster + infra-env  (TODO: implement — see README phase table)
+# POST {{ assisted_base_url }}/clusters then /infra-envs (pull-secret, ssh key, VIPs); save cluster_id/infra_env_id to state.yml.
+- name: Phase 20 — create Assisted cluster + infra-env
+  hosts: local
+  gather_facts: false
+  tasks:
+    - name: Not yet implemented
+      ansible.builtin.debug:
+        msg: "20-assisted-cluster.yml is a stub — POST {{ assisted_base_url }}/clusters then /infra-envs (pull-secret, ssh key, VIPs); save cluster_id/infra_env_id to state.yml."

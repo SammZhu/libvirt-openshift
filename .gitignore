@@ -1,0 +1,19 @@
+# Secrets & site-specific config — NEVER commit
+group_vars/all.yml
+*.pull-secret*
+*offline-token*
+*.pem
+*.key
+
+# Runtime state & outputs
+state.yml
+state.yml.bak
+*.retry
+logs/*
+!logs/.gitkeep
+*.iso
+kubeconfig
+kubeadmin-password
+
+# Ansible collections vendored locally
+collections/

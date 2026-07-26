@@ -1,0 +1,10 @@
+---
+# Phase 10 — libvirt network + VIP reservation  (TODO: implement — see README phase table)
+# Define/start libvirt network {{ libvirt_network }} (NAT), DHCP range, reserve api_vip/ingress_vip outside the pool.
+- name: Phase 10 — libvirt network + VIP reservation
+  hosts: kvm_host
+  gather_facts: false
+  tasks:
+    - name: Not yet implemented
+      ansible.builtin.debug:
+        msg: "10-network.yml is a stub — Define/start libvirt network {{ libvirt_network }} (NAT), DHCP range, reserve api_vip/ingress_vip outside the pool."

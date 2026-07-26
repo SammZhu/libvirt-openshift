@@ -1,0 +1,21 @@
+---
+# Static inventory.
+#   local    — the driver/bastion (rhdemo). Runs Assisted API calls, DNS/token
+#              checks, and orchestration. All phases start here.
+#   kvm_host — the RHEL10 host that runs the libvirt/KVM VMs. Hypervisor/resource
+#              checks and virt-install run here (over SSH).
+#
+# If rhdemo IS the hypervisor (single box), point kvm_host at localhost too:
+#   set ansible_connection: local on the kvm_host entry.
+all:
+  hosts:
+    local:
+      ansible_connection: local
+      ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  children:
+    kvm_host:
+      hosts:
+        rhel10-kvm:
+          ansible_host: 192.168.1.240      # ← RHEL10 host IP (or set ansible_connection: local)
+          ansible_user: root               # ← user with libvirt access
+          # ansible_ssh_private_key_file: ~/.ssh/id_rsa

@@ -1,0 +1,10 @@
+---
+# Phase 30 — fetch discovery ISO to the KVM host  (TODO: implement — see README phase table)
+# Download infra-env discovery ISO (online: image URL; offline: local image-service) into the libvirt pool.
+- name: Phase 30 — fetch discovery ISO to the KVM host
+  hosts: local
+  gather_facts: false
+  tasks:
+    - name: Not yet implemented
+      ansible.builtin.debug:
+        msg: "30-discovery-iso.yml is a stub — Download infra-env discovery ISO (online: image URL; offline: local image-service) into the libvirt pool."

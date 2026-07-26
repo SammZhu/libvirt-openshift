@@ -1,0 +1,35 @@
+---
+# Merge `new_state` (dict, set by caller) into state.yml.
+# Usage:
+#   - ansible.builtin.include_tasks: ../tasks/save_state.yml
+#     vars:
+#       new_state:
+#         cluster_id: "{{ cluster_id }}"
+#         infra_env_id: "{{ infra_env_id }}"
+#
+# IMPORTANT: this task MUST NOT call load_state.yml.  load_state.yml's
+# "Promote state values to top-level facts" uses set_fact to overwrite caller
+# facts with whatever is on disk; since new_state values are lazily-evaluated
+# Jinja templates, they would then resolve to stale on-disk values — silently
+# reverting the change we are trying to persist.  Read state.yml directly via
+# slurp + from_yaml instead.
+- name: Check whether state file exists
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/../state.yml"
+  register: _save_state_stat
+
+- name: Read existing state file (raw)
+  ansible.builtin.slurp:
+    src: "{{ playbook_dir }}/../state.yml"
+  register: _save_state_slurp
+  when: _save_state_stat.stat.exists
+
+- name: Write merged state back to disk
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/../state.yml"
+    mode: "0600"
+    content: |
+      {{ ((_save_state_slurp.content | b64decode | from_yaml | default({}))
+           if _save_state_stat.stat.exists else {})
+         | combine(new_state | default({}))
+         | to_nice_yaml(indent=2) }}

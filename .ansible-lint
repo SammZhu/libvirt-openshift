@@ -1,0 +1,15 @@
+# ansible-lint 门禁：cosmetic 降为 warn，真问题(语法/未定义变量/幂等)仍 fail。
+# 借鉴 alibaba-openshift 的门禁哲学。pin 版本以匹配目标 python(见 CI)。
+profile: moderate
+
+warn_list:
+  - yaml[line-length]
+  - name[casing]
+  - risky-shell-pipe   # preflight 里的只读 grep/awk 管道，已加 changed_when:false
+
+skip_list:
+  - fqcn[action-core]  # 已全用 ansible.builtin.*，误报时豁免
+
+exclude_paths:
+  - logs/
+  - collections/

@@ -1,0 +1,185 @@
+---
+# Phase 00 — Day0 readiness. Fail fast, BEFORE creating any cluster/VM, on the
+# gotchas that otherwise surface halfway through install:
+#   driver:   required tools/files, Assisted API reachable, token mints, DNS+VIP DNS
+#   kvm_host: virtualization + nested-virt, libvirt, CPU/RAM/disk headroom, VIPs free
+
+- name: Preflight — driver (Assisted API, credentials, DNS)
+  hosts: local
+  gather_facts: true
+  tasks:
+    - name: Verify required CLI tools on the driver
+      ansible.builtin.command: "{{ item }} --version"
+      changed_when: false
+      check_mode: false
+      register: _tool
+      failed_when: _tool.rc != 0
+      loop: [curl, jq, dig]
+
+    - name: Verify required input files exist
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: _files
+      loop:
+        - "{{ pull_secret_file }}"
+        - "{{ ssh_pub_key_file }}"
+
+    - name: Assert each input file is present
+      ansible.builtin.assert:
+        that: item.stat.exists
+        fail_msg: "Missing required file: {{ item.item }}"
+      loop: "{{ _files.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # Resolve base URL + (online) mint an access token. Fails here if the offline
+    # token is expired/invalid — far better than a 401 mid-install.
+    - name: Resolve Assisted base URL + auth (online mints token)
+      ansible.builtin.include_tasks: ../tasks/assisted_base.yml
+
+    - name: Verify Assisted API is reachable and lists the requested version
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/openshift-versions"
+        method: GET
+        headers: "{{ assisted_headers }}"
+        return_content: true
+        status_code: 200
+      register: _versions
+      no_log: false
+
+    - name: Assert requested OpenShift version is offered by Assisted
+      ansible.builtin.assert:
+        that: >-
+          (_versions.json.keys() | map('regex_search', '^' ~ (openshift_version.split('.')[0:2] | join('\.'))) | select('string') | list | length) > 0
+        fail_msg: >-
+          {{ openshift_version.split('.')[0:2] | join('.') }} not in Assisted version list
+          ({{ _versions.json.keys() | list }}). Pick a supported minor or (offline) mirror it.
+
+    # DNS: the #1 silent Day0 failure — install completes but ingress never comes up.
+    - name: Resolve api DNS record
+      ansible.builtin.command: "dig +short api.{{ cluster_name }}.{{ base_domain }}"
+      changed_when: false
+      check_mode: false
+      register: _api_dns
+
+    - name: Resolve *.apps wildcard DNS record
+      ansible.builtin.command: "dig +short test.apps.{{ cluster_name }}.{{ base_domain }}"
+      changed_when: false
+      check_mode: false
+      register: _apps_dns
+
+    - name: Assert api / *.apps DNS point at the VIPs
+      ansible.builtin.assert:
+        that:
+          - api_vip in _api_dns.stdout
+          - ingress_vip in _apps_dns.stdout
+        fail_msg: |
+          DNS not correctly pre-provisioned:
+            api.{{ cluster_name }}.{{ base_domain }}    → '{{ _api_dns.stdout | trim }}' (want {{ api_vip }})
+            *.apps.{{ cluster_name }}.{{ base_domain }} → '{{ _apps_dns.stdout | trim }}' (want {{ ingress_vip }})
+          Multi-node Assisted needs BOTH records before install (ingress silently fails otherwise).
+
+    - name: Assert VIPs lie inside the machine network
+      ansible.builtin.assert:
+        that:
+          - api_vip | ansible.utils.ipaddr(machine_network_cidr)
+          - ingress_vip | ansible.utils.ipaddr(machine_network_cidr)
+        fail_msg: "api_vip/ingress_vip must be within machine_network_cidr {{ machine_network_cidr }}."
+
+    - name: Driver preflight passed
+      ansible.builtin.debug:
+        msg: "✓ Driver checks passed (connectivity={{ connectivity }}, api={{ assisted_base_url }})."
+
+- name: Preflight — KVM host (virtualization, resources, VIPs free)
+  hosts: kvm_host
+  gather_facts: true
+  vars:
+    _need_vcpu: "{{ control_plane_count | int * master_vcpu | int + worker_count | int * worker_vcpu | int }}"
+    _need_ram_mib: "{{ control_plane_count | int * master_ram_mib | int + worker_count | int * worker_ram_mib | int }}"
+    _need_disk_gib: "{{ control_plane_count | int * master_disk_gib | int + worker_count | int * worker_disk_gib | int }}"
+  tasks:
+    - name: Verify CPU virtualization extensions present
+      ansible.builtin.command: "grep -Ecm1 '(vmx|svm)' /proc/cpuinfo"
+      changed_when: false
+      check_mode: false
+      register: _virt
+      failed_when: _virt.stdout | int < 1
+
+    # If the KVM host is itself a VM, nested virt must be on or guest VMs boot
+    # without KVM accel → Assisted "insufficient CPU" host-validation failures.
+    - name: Detect whether nested virtualization is enabled (best-effort)
+      ansible.builtin.shell: "cat /sys/module/kvm_intel/parameters/nested /sys/module/kvm_amd/parameters/nested 2>/dev/null | grep -qiE '^(Y|1)' && echo yes || echo no"
+      changed_when: false
+      check_mode: false
+      register: _nested
+
+    - name: Warn if nested virtualization looks disabled
+      ansible.builtin.debug:
+        msg: >-
+          ⚠️ nested virtualization not detected as enabled. If this host is a VM,
+          enable it (kvm_intel/kvm_amd nested=1) or guest VMs will fail Assisted CPU checks.
+      when: _nested.stdout is not search('yes')
+
+    - name: Verify libvirtd is active
+      ansible.builtin.command: systemctl is-active libvirtd
+      changed_when: false
+      check_mode: false
+      register: _libvirtd
+      failed_when: _libvirtd.stdout is not search('active')
+
+    - name: Verify virt-install and qemu-img are present
+      ansible.builtin.command: "command -v {{ item }}"
+      changed_when: false
+      check_mode: false
+      register: _virttools
+      failed_when: _virttools.rc != 0
+      loop: [virt-install, qemu-img, virsh]
+
+    - name: Read libvirt storage pool free capacity (bytes)
+      ansible.builtin.shell: "virsh pool-info --bytes {{ libvirt_pool }} | awk '/^Available:/ {print $2}'"
+      changed_when: false
+      check_mode: false
+      register: _pool_free
+
+    - name: Assert storage pool has room for all VM disks
+      ansible.builtin.assert:
+        that: (_pool_free.stdout | int) > (_need_disk_gib | int * 1073741824)
+        fail_msg: >-
+          libvirt pool '{{ libvirt_pool }}' has {{ (_pool_free.stdout | int / 1073741824) | round(1) }} GiB free,
+          need ~{{ _need_disk_gib }} GiB ({{ control_plane_count }}×{{ master_disk_gib }} + {{ worker_count }}×{{ worker_disk_gib }}).
+
+    - name: Assert enough host RAM
+      ansible.builtin.assert:
+        that: (ansible_memtotal_mb | int) > (_need_ram_mib | int)
+        fail_msg: "Host RAM {{ ansible_memtotal_mb }} MiB < needed {{ _need_ram_mib }} MiB."
+
+    - name: Assert enough host vCPU
+      ansible.builtin.assert:
+        that: (ansible_processor_vcpus | int) >= (_need_vcpu | int)
+        fail_msg: "Host vCPU {{ ansible_processor_vcpus }} < needed {{ _need_vcpu }}."
+
+    # VIPs must be UNUSED before install (keepalived claims them). A reply here
+    # means an IP conflict — the classic "install hangs at bootstrap" cause.
+    - name: Check API/Ingress VIPs are free (ping should NOT answer)
+      ansible.builtin.command: "ping -c1 -W1 {{ item }}"
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      register: _vip_ping
+      loop: ["{{ api_vip }}", "{{ ingress_vip }}"]
+
+    - name: Assert VIPs are free
+      ansible.builtin.assert:
+        that: item.rc != 0
+        fail_msg: "VIP {{ item.item }} already answers ping — IP conflict; pick a free address."
+      loop: "{{ _vip_ping.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: KVM host preflight passed
+      ansible.builtin.debug:
+        msg: |
+          ✓ KVM host checks passed. Capacity for {{ control_plane_count }}+{{ worker_count }} VMs:
+            vCPU need {{ _need_vcpu }} / have {{ ansible_processor_vcpus }}
+            RAM  need {{ _need_ram_mib }} MiB / have {{ ansible_memtotal_mb }} MiB
+          Next: ansible-playbook playbooks/10-network.yml

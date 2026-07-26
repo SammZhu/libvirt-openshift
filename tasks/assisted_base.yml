@@ -1,0 +1,24 @@
+---
+# Resolve the Assisted-Installer REST base URL + auth header from `connectivity`.
+# This is THE switch that makes online and offline share one downstream:
+#   online  → SaaS api.openshift.com, Authorization: Bearer <token minted from offline token>
+#   offline → local assisted-service (podman), no auth
+# All later phases (create cluster/infra-env, ISO, install) hit
+# {{ assisted_base_url }} with {{ assisted_headers }} — identical code both ways.
+- name: Assert connectivity is online or offline
+  ansible.builtin.assert:
+    that: connectivity in ['online', 'offline']
+    fail_msg: "connectivity must be 'online' or 'offline' (got: {{ connectivity | default('undefined') }})"
+
+- name: Set Assisted base URL from connectivity
+  ansible.builtin.set_fact:
+    assisted_base_url: "{{ assisted_saas_url if connectivity == 'online' else assisted_onprem_url }}"
+
+- name: Mint SaaS access token (online only)
+  ansible.builtin.include_tasks: assisted_token.yml
+  when: connectivity == 'online'
+
+- name: Build Assisted auth header
+  ansible.builtin.set_fact:
+    assisted_headers: "{{ {'Authorization': 'Bearer ' + ai_access_token} if connectivity == 'online' else {} }}"
+  no_log: true

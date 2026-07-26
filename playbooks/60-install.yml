@@ -1,0 +1,10 @@
+---
+# Phase 60 — set roles, trigger install, poll  (TODO: implement — see README phase table)
+# Assign master/worker roles, POST /actions/install, poll cluster status to installed; surface per-host progress.
+- name: Phase 60 — set roles, trigger install, poll
+  hosts: local
+  gather_facts: false
+  tasks:
+    - name: Not yet implemented
+      ansible.builtin.debug:
+        msg: "60-install.yml is a stub — Assign master/worker roles, POST /actions/install, poll cluster status to installed; surface per-host progress."
