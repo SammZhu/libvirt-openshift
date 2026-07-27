@@ -25,6 +25,7 @@ sso_url:             https://sso.redhat.com/auth/realms/redhat-external/protocol
 # machine network:节点 NIC1,装机/API/外部访问;多节点 assisted 自带 keepalived VIP
 machine_network_cidr: 192.168.1.0/24
 machine_bridge:       br-lan           # 桥到 host 的 1G 口(eno*);Phase 10 建
+machine_dns:          192.168.1.1      # 节点用的 DNS(一般=路由器/网关);preflight 查它而非 driver 的 resolver
 api_vip:              192.168.1.200    # ← 空闲且不在路由器 DHCP 段
 ingress_vip:          192.168.1.201    # ← 空闲且不在 DHCP 段
 # storage/migration network:节点 NIC2,ODF 复制 + CNV 热迁移(10G 线速)

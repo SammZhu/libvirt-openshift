@@ -52,8 +52,8 @@
           {{ openshift_version.split('.')[0:2] | join('.') }} 不在 Assisted 版本列表
           ({{ _versions.json.keys() | list }})。换受支持的 minor,或 offline 先 mirror。
 
-    - name: Resolve api / *.apps DNS
-      ansible.builtin.command: "dig +short {{ item }}.{{ cluster_name }}.{{ base_domain }}"
+    - name: Resolve api / *.apps DNS(查节点用的 DNS = machine_dns,非 driver 自己的 resolver)
+      ansible.builtin.command: "dig +short @{{ machine_dns }} {{ item }}.{{ cluster_name }}.{{ base_domain }}"
       changed_when: false
       check_mode: false
       register: _dns
