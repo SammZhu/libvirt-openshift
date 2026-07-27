@@ -51,7 +51,8 @@ master_ram_mib:   24576
 master_disk_gib:  120                  # OS 盘;OSD 盘另给(见 osd_disks)
 worker_vcpu:      16
 worker_ram_mib:   32768
-worker_disk_gib:  120
+worker_disk_gib:  120                  # OS 盘
+worker_data_disk_gib: 800              # 本地 LVMS 数据盘(pool 上 qcow2 thin;masters 的 OSD 走 osd_disks 裸盘直通)
 worker_cpu_mode:  host-passthrough     # ★嵌套 CNV 必须:把 vmx 透传进 worker VM
 
 # ── 存储 ─────────────────────────────────────────────────────────────────────

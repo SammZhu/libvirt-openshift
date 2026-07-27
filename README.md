@@ -45,8 +45,8 @@
 | 00 | `playbooks/00-preflight.yml` | **Day0 就绪性**:虚拟化/嵌套虚拟化、libvirt(virsh)、真 pool、容量、裸盘、DNS/VIP、API/凭据 | ✅ 硬件 gate live 验 |
 | 10 | `playbooks/10-network.yml` | 每台 host 网络就绪:machine=macvtap(默认,安全)/bridge(可选);storage=br-ovs;可选统一 MTU | ✅ 已实现 |
 | 20 | `playbooks/20-assisted-cluster.yml` | 建 cluster + infra-env(v2 REST;VIP/网络/NTP;幂等 state) | ✅ 已实现 |
-| 30 | `playbooks/30-discovery-iso.yml` | 取 discovery ISO 到 host pool | 🚧 stub |
-| 40 | `playbooks/40-vms.yml` | `virt-install` master×3(+OSD 盘)/ worker×N(host-passthrough+本地盘),双网卡,从 ISO 引导 | 🚧 stub |
+| 30 | `playbooks/30-discovery-iso.yml` | 取 discovery ISO 到各 host pool | ✅ live 验 |
+| 40 | `playbooks/40-vms.yml` | `virt-install` master×3(+OSD 裸盘直通)/ worker×N(host-passthrough+LVMS 盘),双网卡,从 ISO 引导 | ✅ 已实现 |
 | 50 | `playbooks/50-wait-hosts.yml` | 轮询 host 注册 + assisted 校验通过 | 🚧 stub |
 | 60 | `playbooks/60-install.yml` | 定角色、触发安装、轮询进度 | 🚧 stub |
 | 90 | `playbooks/90-kubeconfig.yml` | 取 kubeconfig / kubeadmin 密码 | 🚧 stub |

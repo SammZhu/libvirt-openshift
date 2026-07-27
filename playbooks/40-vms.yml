@@ -1,10 +1,77 @@
 ---
-# Phase 40 — virt-install master+worker VMs  (TODO: implement — see README phase table)
-# virt-install {{ control_plane_count }} masters + {{ worker_count }} workers, boot from discovery ISO, sized per master_/worker_ vars.
-- name: Phase 40 — virt-install master+worker VMs
+# Phase 40 — virt-install 起 OpenShift 节点 VM,从 discovery ISO 引导注册.
+#   control-storage host: N master —— OS 盘(pool qcow2)+ OSD 盘(osd_disks 裸盘直通)
+#   cnv-compute    host: N worker —— OS 盘 + LVMS 数据盘(pool qcow2 thin);--cpu host-passthrough 透传 vmx 跑嵌套 CNV
+#   两网卡:machine=macvtap(machine_nic)+ storage=OVS(br-ovs);--boot hd,cdrom(空盘→先引导 ISO,装完→引导硬盘)
+#   幂等:同名域已存在则跳过.
+- name: Phase 40 — virt-install 节点 VM
   hosts: kvm_host
   gather_facts: false
+  become: true
   tasks:
-    - name: Not yet implemented
+    - name: 查 pool 路径
+      ansible.builtin.shell: "virsh -c qemu:///system pool-dumpxml {{ vm_pool }} | grep -oP '(?<=<path>)[^<]+'"
+      changed_when: false
+      register: _pp
+
+    - name: 设 pool 路径 + iso 路径
+      ansible.builtin.set_fact:
+        _poolpath: "{{ _pp.stdout | trim }}"
+        iso_path: "{{ (_pp.stdout | trim) }}/{{ cluster_name }}-discovery.iso"
+
+    - name: 断言 ISO 已下(先跑 Phase 30)
+      ansible.builtin.stat:
+        path: "{{ iso_path }}"
+      register: _iso
+      failed_when: not _iso.stat.exists
+
+    - name: 现有域清单
+      ansible.builtin.command: "virsh -c qemu:///system list --all --name"
+      changed_when: false
+      register: _doms
+
+    # ── masters(control-storage host)──
+    - name: virt-install master VM(OS 盘 + OSD 裸盘直通)
+      ansible.builtin.shell: |
+        virt-install --connect qemu:///system --name {{ cluster_name }}-master-{{ item }} \
+          --vcpus {{ master_vcpu }} --memory {{ master_ram_mib }} --cpu host-passthrough \
+          --disk path={{ _poolpath }}/{{ cluster_name }}-master-{{ item }}.qcow2,size={{ master_disk_gib }},format=qcow2,bus=virtio \
+          --disk path={{ osd_disks[item | int] }},bus=virtio \
+          --disk path={{ iso_path }},device=cdrom \
+          --network type=direct,source={{ machine_nic }},source_mode=bridge,model=virtio \
+          --network type=bridge,source={{ storage_bridge }},virtualport_type=openvswitch,model=virtio \
+          --boot hd,cdrom --os-variant rhel9.4 --graphics vnc --noautoconsole
+      args:
+        executable: /bin/bash
+      loop: "{{ range(masters_here | int) | list }}"
+      when:
+        - (masters_here | int) > 0
+        - (cluster_name ~ '-master-' ~ item) not in (_doms.stdout_lines | map('trim') | list)
+      register: _mk_m
+      changed_when: _mk_m.rc == 0
+
+    # ── workers(cnv-compute host,嵌套 CNV)──
+    - name: virt-install worker VM(host-passthrough + LVMS 数据盘)
+      ansible.builtin.shell: |
+        virt-install --connect qemu:///system --name {{ cluster_name }}-worker-{{ item }} \
+          --vcpus {{ worker_vcpu }} --memory {{ worker_ram_mib }} --cpu {{ worker_cpu_mode }} \
+          --disk path={{ _poolpath }}/{{ cluster_name }}-worker-{{ item }}.qcow2,size={{ worker_disk_gib }},format=qcow2,bus=virtio \
+          --disk path={{ _poolpath }}/{{ cluster_name }}-worker-{{ item }}-data.qcow2,size={{ worker_data_disk_gib }},format=qcow2,bus=virtio \
+          --disk path={{ iso_path }},device=cdrom \
+          --network type=direct,source={{ machine_nic }},source_mode=bridge,model=virtio \
+          --network type=bridge,source={{ storage_bridge }},virtualport_type=openvswitch,model=virtio \
+          --boot hd,cdrom --os-variant rhel9.4 --graphics vnc --noautoconsole
+      args:
+        executable: /bin/bash
+      loop: "{{ range(workers_here | int) | list }}"
+      when:
+        - (workers_here | int) > 0
+        - (cluster_name ~ '-worker-' ~ item) not in (_doms.stdout_lines | map('trim') | list)
+      register: _mk_w
+      changed_when: _mk_w.rc == 0
+
+    - name: Phase 40 done
       ansible.builtin.debug:
-        msg: "40-vms.yml is a stub — virt-install {{ control_plane_count }} masters + {{ worker_count }} workers, boot from discovery ISO, sized per master_/worker_ vars."
+        msg: >-
+          ✓ {{ inventory_hostname }}: {{ masters_here }} master + {{ workers_here }} worker VM 已定义/启动;
+          从 {{ iso_path }} 引导 → 稍等去 Phase 50 看 host 注册
