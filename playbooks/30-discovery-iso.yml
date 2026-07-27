@@ -1,10 +1,57 @@
 ---
-# Phase 30 — fetch discovery ISO to the KVM host  (TODO: implement — see README phase table)
-# Download infra-env discovery ISO (online: image URL; offline: local image-service) into the libvirt pool.
-- name: Phase 30 — fetch discovery ISO to the KVM host
+# Phase 30 — 取 discovery ISO 并下发到各 KVM host 的 pool.
+#   driver: GET infra-env image-url(presigned)→ set_fact
+#   kvm_host: 从该 URL 下载 ISO 到 pool 目录(hosts 有互联网)
+- name: Phase 30a — 取 discovery ISO URL(driver)
   hosts: local
   gather_facts: false
   tasks:
-    - name: Not yet implemented
+    - name: Resolve Assisted base URL + auth
+      ansible.builtin.include_tasks: ../tasks/assisted_base.yml
+    - name: Load state(infra_env_id)
+      ansible.builtin.include_tasks: ../tasks/load_state.yml
+    - name: 断言 infra_env_id 已存在(先跑 Phase 20)
+      ansible.builtin.assert:
+        that: infra_env_id is defined
+        fail_msg: "state.yml 无 infra_env_id;先跑 Phase 20。"
+    - name: 取 discovery ISO 下载 URL
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/infra-envs/{{ infra_env_id }}/downloads/image-url"
+        method: GET
+        headers: "{{ assisted_headers }}"
+        status_code: [200]
+      register: _isourl
+      no_log: true                              # presigned URL 带签名
+    - name: 缓存 ISO URL(供 kvm_host play)
+      ansible.builtin.set_fact:
+        iso_url: "{{ _isourl.json.url | string }}"
+      no_log: true
+    - name: ISO URL 已取
       ansible.builtin.debug:
-        msg: "30-discovery-iso.yml is a stub — Download infra-env discovery ISO (online: image URL; offline: local image-service) into the libvirt pool."
+        msg: "✓ discovery ISO URL 已获取(过期:{{ _isourl.json.expires_at | default('?') }})"
+
+- name: Phase 30b — 下载 ISO 到各 KVM host pool
+  hosts: kvm_host
+  gather_facts: false
+  become: true
+  tasks:
+    - name: 查 pool 目标路径
+      ansible.builtin.shell: "virsh -c qemu:///system pool-dumpxml {{ vm_pool }} | grep -oP '(?<=<path>)[^<]+'"
+      changed_when: false
+      register: _poolpath
+    - name: 记录 iso 路径
+      ansible.builtin.set_fact:
+        iso_path: "{{ _poolpath.stdout | trim }}/{{ cluster_name }}-discovery.iso"
+    - name: 下载 discovery ISO(已存在则跳过,不重下)
+      ansible.builtin.get_url:
+        url: "{{ hostvars['local'].iso_url }}"
+        dest: "{{ iso_path }}"
+        mode: "0644"
+        force: false
+      no_log: true                              # URL 含签名
+    - name: 刷新 pool(让 libvirt 看到 ISO)
+      ansible.builtin.command: "virsh -c qemu:///system pool-refresh {{ vm_pool }}"
+      changed_when: false
+    - name: Phase 30 done
+      ansible.builtin.debug:
+        msg: "✓ {{ inventory_hostname }}: ISO → {{ iso_path }}"
