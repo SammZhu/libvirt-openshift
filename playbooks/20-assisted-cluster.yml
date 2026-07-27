@@ -54,9 +54,19 @@
           pull_secret: "{{ _pull_secret }}"
           ssh_public_key: "{{ _ssh_key }}"
         status_code: [201]
+        return_content: true
       register: _cluster
-      no_log: true                              # body 带 pull_secret
+      no_log: true                              # 请求 body 带 pull_secret → 整条 no_log
+      failed_when: false                        # 不中止,交给下面 surface(只打响应体,无 secret)
       when: cluster_id is not defined
+
+    - name: 建 cluster 出错则 surface(仅响应体,无 secret)
+      ansible.builtin.fail:
+        msg: "cluster 创建失败 status={{ _cluster.status | default('?') }}: {{ _cluster.json | default(_cluster.content) | default('(无响应体)') }}"
+      when:
+        - cluster_id is not defined
+        - _cluster.status is defined
+        - _cluster.status != 201
 
     - name: 记录 cluster_id
       ansible.builtin.set_fact:
@@ -80,9 +90,19 @@
           pull_secret: "{{ _pull_secret }}"
           ssh_authorized_key: "{{ _ssh_key }}"
         status_code: [201]
+        return_content: true
       register: _infra
       no_log: true
+      failed_when: false
       when: infra_env_id is not defined
+
+    - name: 建 infra-env 出错则 surface(仅响应体)
+      ansible.builtin.fail:
+        msg: "infra-env 创建失败 status={{ _infra.status | default('?') }}: {{ _infra.json | default(_infra.content) | default('(无响应体)') }}"
+      when:
+        - infra_env_id is not defined
+        - _infra.status is defined
+        - _infra.status != 201
 
     - name: 记录 infra_env_id
       ansible.builtin.set_fact:
