@@ -17,19 +17,23 @@
 > phase 编号 playbook、`surface_errors` 回调、`run_cli`、`installation_method` 开关、ansible-lint 门禁、
 > `make demo` + QUICKSTART 三段式约定。
 
-## 拓扑
+## 拓扑（3 台机器,终态 = OpenShift Virtualization / CNV 实验环境）
 
 ```
-  rhdemo (RHEL9, bastion/driver)                RHEL10 host (KVM)
-  ├─ ansible + assisted API 调用       ── SSH ──►  ├─ libvirt: ocp-net (192.168.126.0/24)
-  └─ (offline 时) assisted-service@podman        │  ├─ master-0/1/2   (4c/16G/120G)
-                                                  │  └─ worker-0..N    (4c/16G/120G)
-  DNS 预置:                                        API VIP  192.168.126.100 (keepalived)
-   api.<cluster>.<domain>  → API VIP               Ingress VIP 192.168.126.101 (keepalived)
-   *.apps.<cluster>.<domain> → Ingress VIP        （多节点 assisted 自带 VIP,无需外部 LB）
+  RHEL8 (Ansible 控制节点)          RHEL9 rhdemo (KVM host)              RHEL10 OpenShiftV (物理机)
+  ├─ git clone 本工程         ─SSH─► ├─ libvirt: ocp-net                  ├─ 裸金属 worker,加入同集群
+  └─ ansible-playbook              │  ├─ master-0/1/2 (VM,control)      │  ├─ 本地裸盘 → ODF 存储
+     (assisted API 调用/编排)      │  └─ worker VM ×n (可选)             │  └─ 原生虚拟化 → 跑 CNV 虚机
+                                    │  ★nested virt 必开(VM 节点要跑 CNV)  DNS: api/*.apps → VIP
+                                    └─ 从 discovery ISO 引导注册           物理机走虚拟介质/USB/PXE 引导注册
+   API VIP / Ingress VIP (keepalived,多节点 assisted 自带,无需外部 LB)
 ```
 
-`kvm_host` 可以是远端 RHEL10 host,也可以 `localhost`(rhdemo 本身即 hypervisor)—— 由 inventory 决定。
+- **RHEL8** —— Ansible 客户端(= srv-down),clone 本工程、跑 playbook;不装任何节点。
+- **RHEL9 `rhdemo`** —— libvirt KVM host,承载 OpenShift **control plane(3 VM)** +（可选)VM worker。VM 节点要跑 CNV,所以 **nested virt 必开**(不再是"可选告警")。
+- **RHEL10 `OpenShiftV`** —— **物理裸金属 worker**,加入同一集群:本地裸盘供 **ODF** 存储、原生虚拟化承载 **OpenShift Virtualization(CNV)** 虚机。
+
+> 混合节点(VM + 物理机)在**同一个 assisted infra-env** 里注册:VM 由 `virt-install` 从 discovery ISO 引导,物理机由虚拟介质/USB/PXE 从同一 ISO 引导。装完集群后,Day2 落 **ODF operator + CNV operator** 构成虚拟化环境。
 
 ## Phase 编排
 
