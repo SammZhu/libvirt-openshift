@@ -1,10 +1,76 @@
 ---
-# Phase 10 — libvirt network + VIP reservation  (TODO: implement — see README phase table)
-# Define/start libvirt network {{ libvirt_network }} (NAT), DHCP range, reserve api_vip/ingress_vip outside the pool.
-- name: Phase 10 — libvirt network + VIP reservation
+# Phase 10 — 每台 KVM host 的网络就绪(给 VM 节点接两张网).
+#   machine network(192.168.1, 1G):VM NIC1 —— 默认 macvtap(不动主机主网卡,零断连风险);
+#                                   machine_net_mode=bridge 时在 machine_nic 上建 br-lan(有风险).
+#   storage/migration(10.10, 10G): VM NIC2 —— 接已有 OVS br-ovs;可选统一 MTU 9000.
+# 本 phase 只做 host 侧网络准备;VM 挂载在 Phase 40 (virt-install) 完成.
+
+- name: Phase 10 — KVM host 网络就绪
   hosts: kvm_host
-  gather_facts: false
+  gather_facts: true
+  become: true
   tasks:
-    - name: Not yet implemented
+    - name: machine_nic 存在且 up
+      ansible.builtin.command: "cat /sys/class/net/{{ machine_nic }}/operstate"
+      changed_when: false
+      register: _mnic
+      failed_when: _mnic.stdout != 'up'
+
+    - name: storage_bridge (OVS) 存在
+      ansible.builtin.command: "ip link show {{ storage_bridge }}"
+      changed_when: false
+      register: _sbr
+      failed_when: _sbr.rc != 0
+
+    # ── machine network:macvtap(默认)——无需改 host,Phase 40 用 type=direct ──
+    - name: machine network = macvtap(默认,安全)
       ansible.builtin.debug:
-        msg: "10-network.yml is a stub — Define/start libvirt network {{ libvirt_network }} (NAT), DHCP range, reserve api_vip/ingress_vip outside the pool."
+        msg: >-
+          {{ inventory_hostname }}: VM machine NIC 走 macvtap(type=direct,source={{ machine_nic }},
+          source_mode=bridge)。不改主机网络。VM 从路由器 DHCP 拿 192.168.1.x,有网关/互联网。
+      when: machine_net_mode == 'macvtap'
+
+    # ── machine network:Linux 桥(可选,有断连风险)──
+    - name: "⚠️ bridge 模式:检查 {{ machine_bridge }} 是否已存在"
+      ansible.builtin.command: "nmcli -t -f NAME con show"
+      changed_when: false
+      register: _cons
+      when: machine_net_mode == 'bridge'
+
+    - name: "⚠️ bridge 模式:建 br-lan 会短暂断 {{ machine_nic }}——建议在主机 console 或有回滚保护下做"
+      ansible.builtin.debug:
+        msg: >-
+          将在 {{ machine_nic }} 上建 Linux 桥 {{ machine_bridge }} 并迁移 IP(DHCP)。
+          SSH 走该网卡时可能瞬断;若卡住请到 console 处理。已存在则跳过。
+      when:
+        - machine_net_mode == 'bridge'
+        - machine_bridge not in _cons.stdout
+
+    - name: "bridge 模式:建桥 + enslave machine_nic(idempotent)"
+      ansible.builtin.shell: |
+        set -e
+        nmcli con add type bridge ifname {{ machine_bridge }} con-name {{ machine_bridge }} \
+          ipv4.method auto connection.autoconnect yes
+        nmcli con add type ethernet ifname {{ machine_nic }} con-name {{ machine_bridge }}-slave \
+          master {{ machine_bridge }} connection.autoconnect yes
+        nmcli con up {{ machine_bridge }}
+        nmcli con up {{ machine_bridge }}-slave
+      args:
+        executable: /bin/bash
+      register: _brup
+      changed_when: _brup.rc == 0
+      when:
+        - machine_net_mode == 'bridge'
+        - machine_bridge not in _cons.stdout
+
+    # ── storage network:可选统一 MTU 9000 ──
+    - name: "统一存储网 MTU → {{ storage_mtu }}(可选;实测不统一 TCP 也线速)"
+      ansible.builtin.command: "ovs-vsctl set int {{ storage_nic }} mtu_request={{ storage_mtu }}"
+      changed_when: true
+      when: unify_storage_mtu | default(false) | bool
+
+    - name: Phase 10 done
+      ansible.builtin.debug:
+        msg: >-
+          ✓ {{ inventory_hostname }} 网络就绪 — machine={{ machine_net_mode }}(nic {{ machine_nic }}),
+          storage={{ storage_bridge }}(nic {{ storage_nic }}){% if unify_storage_mtu | default(false) | bool %} @MTU {{ storage_mtu }}{% endif %}

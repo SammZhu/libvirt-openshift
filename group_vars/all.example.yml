@@ -31,6 +31,19 @@ ingress_vip:          192.168.1.201    # ← 空闲且不在 DHCP 段
 storage_network_cidr: 10.10.0.0/24
 storage_mtu:          9000             # 建议两端统一 9000(实测:不统一 TCP 也线速,仅优化)
 # DNS 预置(Phase 00 校验):api.<c>.<b>→api_vip;*.apps.<c>.<b>→ingress_vip
+# machine network 上 VM 网卡怎么接 host 的 1G 口:
+#   macvtap(默认,安全)= Phase 40 用 type=direct,source_mode=bridge,不动主机主网卡
+#   bridge            = Phase 10 在 machine_nic 上建 Linux 桥 br-lan(有断连风险,谨慎)
+machine_net_mode:     macvtap
+unify_storage_mtu:    false            # true 时 Phase 10 把存储网桥 MTU 拉到 storage_mtu(rhel10 1500→9000)
+
+# ── OpenShift 集群网络 / ISO(Phase 20/30 用)──────────────────────────────────
+network_type:            OVNKubernetes
+cluster_network_cidr:    10.128.0.0/14
+cluster_network_host_prefix: 23
+service_network_cidr:    172.30.0.0/16
+image_type:              minimal-iso   # minimal-iso(小,运行时拉根)| full-iso(离线更稳)
+additional_ntp_sources:  ""            # 建议填内网 NTP(如路由器 192.168.1.1)——时钟偏移是 assisted 校验/CSI 常见坑
 
 # ── VM 规格 ──────────────────────────────────────────────────────────────────
 master_vcpu:      8

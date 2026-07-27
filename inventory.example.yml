@@ -20,6 +20,7 @@ all:
         # ── 控制面 + 存储 host(常开)──
         kvmhost-cp:
           ansible_host: 10.0.0.9        # ← control-storage host IP
+          machine_nic: eno0             # ← host 的 1G LAN 网卡(machine network 载体)
           vm_role: control-storage
           masters_here: 3               # 3 master VM 在这
           workers_here: 0
@@ -30,6 +31,7 @@ all:
         # ── CNV 计算 host(按需开,省电)──
         kvmhost-cnv:
           ansible_host: 10.0.0.10       # ← cnv-compute host IP
+          machine_nic: eno0             # ← host 的 1G LAN 网卡
           vm_role: cnv-compute
           masters_here: 0
           workers_here: 2               # 2 worker VM 在这

@@ -40,16 +40,16 @@
 
 ## Phase 编排
 
-| Phase | Playbook | 做什么 |
-|------|----------|--------|
-| 00 | `playbooks/00-preflight.yml` | **Day0 就绪性**:虚拟化/嵌套虚拟化、libvirt、资源、DNS/VIP、API/凭据可达 |
-| 10 | `playbooks/10-network.yml` | libvirt 网络(NAT/bridge)、DHCP、VIP 预留 |
-| 20 | `playbooks/20-assisted-cluster.yml` | 建 cluster + infra-env(online 走 SaaS / offline 走本地 svc) |
-| 30 | `playbooks/30-discovery-iso.yml` | 取 discovery ISO 到 host |
-| 40 | `playbooks/40-vms.yml` | `virt-install` 起 master×3 + worker×N,从 ISO 引导 |
-| 50 | `playbooks/50-wait-hosts.yml` | 轮询 host 注册 + assisted 校验通过 |
-| 60 | `playbooks/60-install.yml` | 定角色、触发安装、轮询进度 |
-| 90 | `playbooks/90-kubeconfig.yml` | 取 kubeconfig / kubeadmin 密码 |
+| Phase | Playbook | 做什么 | 状态 |
+|------|----------|--------|:--:|
+| 00 | `playbooks/00-preflight.yml` | **Day0 就绪性**:虚拟化/嵌套虚拟化、libvirt(virsh)、真 pool、容量、裸盘、DNS/VIP、API/凭据 | ✅ 硬件 gate live 验 |
+| 10 | `playbooks/10-network.yml` | 每台 host 网络就绪:machine=macvtap(默认,安全)/bridge(可选);storage=br-ovs;可选统一 MTU | ✅ 已实现 |
+| 20 | `playbooks/20-assisted-cluster.yml` | 建 cluster + infra-env(v2 REST;VIP/网络/NTP;幂等 state) | ✅ 已实现 |
+| 30 | `playbooks/30-discovery-iso.yml` | 取 discovery ISO 到 host pool | 🚧 stub |
+| 40 | `playbooks/40-vms.yml` | `virt-install` master×3(+OSD 盘)/ worker×N(host-passthrough+本地盘),双网卡,从 ISO 引导 | 🚧 stub |
+| 50 | `playbooks/50-wait-hosts.yml` | 轮询 host 注册 + assisted 校验通过 | 🚧 stub |
+| 60 | `playbooks/60-install.yml` | 定角色、触发安装、轮询进度 | 🚧 stub |
+| 90 | `playbooks/90-kubeconfig.yml` | 取 kubeconfig / kubeadmin 密码 | 🚧 stub |
 
 `site.yml` 按顺序串起来。
 

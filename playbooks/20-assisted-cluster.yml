@@ -1,10 +1,104 @@
 ---
-# Phase 20 — create Assisted cluster + infra-env  (TODO: implement — see README phase table)
-# POST {{ assisted_base_url }}/clusters then /infra-envs (pull-secret, ssh key, VIPs); save cluster_id/infra_env_id to state.yml.
-- name: Phase 20 — create Assisted cluster + infra-env
+# Phase 20 — 建 Assisted cluster + infra-env(v2 REST).
+# online: SaaS api.openshift.com(Bearer)/ offline: 本地 assisted-service —— 由 tasks/assisted_base.yml 决定.
+# 幂等:state.yml 里已有 cluster_id/infra_env_id 则跳过创建.
+- name: Phase 20 — Assisted cluster + infra-env
   hosts: local
   gather_facts: false
   tasks:
-    - name: Not yet implemented
+    - name: Resolve Assisted base URL + auth
+      ansible.builtin.include_tasks: ../tasks/assisted_base.yml
+
+    - name: Load pipeline state
+      ansible.builtin.include_tasks: ../tasks/load_state.yml
+
+    - name: Read pull secret
+      ansible.builtin.slurp:
+        src: "{{ pull_secret_file }}"
+      register: _ps_slurp
+      no_log: true
+
+    - name: Read SSH public key
+      ansible.builtin.slurp:
+        src: "{{ ssh_pub_key_file }}"
+      register: _key_slurp
+
+    - name: Set secrets as facts
+      ansible.builtin.set_fact:
+        _pull_secret: "{{ _ps_slurp.content | b64decode | trim }}"
+        _ssh_key: "{{ _key_slurp.content | b64decode | trim }}"
+      no_log: true
+
+    # ── 建 cluster ──
+    - name: 建 Assisted cluster
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/clusters"
+        method: POST
+        headers: "{{ assisted_headers | combine({'Content-Type': 'application/json'}) }}"
+        body_format: json
+        body:
+          name: "{{ cluster_name }}"
+          openshift_version: "{{ openshift_version }}"
+          base_dns_domain: "{{ base_domain }}"
+          cpu_architecture: "{{ cpu_architecture }}"
+          high_availability_mode: "{{ 'Full' if (control_plane_count | int) > 1 else 'None' }}"
+          schedulable_masters: "{{ masters_schedulable | bool }}"
+          user_managed_networking: false        # cluster-managed → keepalived VIP,无需外部 LB
+          network_type: "{{ network_type }}"
+          cluster_networks: [{cidr: "{{ cluster_network_cidr }}", host_prefix: "{{ cluster_network_host_prefix | int }}"}]
+          service_networks: [{cidr: "{{ service_network_cidr }}"}]
+          machine_networks: [{cidr: "{{ machine_network_cidr }}"}]
+          api_vips: [{ip: "{{ api_vip }}"}]
+          ingress_vips: [{ip: "{{ ingress_vip }}"}]
+          additional_ntp_source: "{{ additional_ntp_sources }}"
+          pull_secret: "{{ _pull_secret }}"
+          ssh_public_key: "{{ _ssh_key }}"
+        status_code: [201]
+      register: _cluster
+      no_log: true                              # body 带 pull_secret
+      when: cluster_id is not defined
+
+    - name: 记录 cluster_id
+      ansible.builtin.set_fact:
+        cluster_id: "{{ _cluster.json.id }}"
+      when: cluster_id is not defined
+
+    # ── 建 infra-env(生成 discovery ISO 的载体)──
+    - name: 建 infra-env
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/infra-envs"
+        method: POST
+        headers: "{{ assisted_headers | combine({'Content-Type': 'application/json'}) }}"
+        body_format: json
+        body:
+          name: "{{ cluster_name }}-infra"
+          openshift_version: "{{ openshift_version }}"
+          cpu_architecture: "{{ cpu_architecture }}"
+          cluster_id: "{{ cluster_id }}"
+          image_type: "{{ image_type }}"
+          additional_ntp_sources: "{{ additional_ntp_sources }}"
+          pull_secret: "{{ _pull_secret }}"
+          ssh_authorized_key: "{{ _ssh_key }}"
+        status_code: [201]
+      register: _infra
+      no_log: true
+      when: infra_env_id is not defined
+
+    - name: 记录 infra_env_id
+      ansible.builtin.set_fact:
+        infra_env_id: "{{ _infra.json.id }}"
+      when: infra_env_id is not defined
+
+    # ── 持久化 ──
+    - name: 保存 state(cluster_id / infra_env_id)
+      ansible.builtin.include_tasks: ../tasks/save_state.yml
+      vars:
+        new_state:
+          cluster_id: "{{ cluster_id }}"
+          infra_env_id: "{{ infra_env_id }}"
+
+    - name: Phase 20 done
       ansible.builtin.debug:
-        msg: "20-assisted-cluster.yml is a stub — POST {{ assisted_base_url }}/clusters then /infra-envs (pull-secret, ssh key, VIPs); save cluster_id/infra_env_id to state.yml."
+        msg: >-
+          ✓ cluster={{ cluster_name }} id={{ cluster_id }} | infra_env={{ infra_env_id }}
+          | VIP api={{ api_vip }} ingress={{ ingress_vip }} | 下一步 Phase 30 取 discovery ISO
