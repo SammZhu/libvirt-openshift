@@ -51,7 +51,7 @@
           api_vips: [{ip: "{{ api_vip }}"}]
           ingress_vips: [{ip: "{{ ingress_vip }}"}]
           additional_ntp_source: "{{ additional_ntp_sources }}"
-          pull_secret: "{{ _pull_secret }}"
+          pull_secret: "{{ _pull_secret }}{{ '' }}"   # 双表达式:阻止 jinja2_native 把 JSON 串 literal_eval 成 dict
           ssh_public_key: "{{ _ssh_key }}"
         status_code: [201]
         return_content: true
@@ -87,7 +87,7 @@
           cluster_id: "{{ cluster_id }}"
           image_type: "{{ image_type }}"
           additional_ntp_sources: "{{ additional_ntp_sources }}"
-          pull_secret: "{{ _pull_secret }}"
+          pull_secret: "{{ _pull_secret }}{{ '' }}"   # 双表达式:阻止 jinja2_native 把 JSON 串 literal_eval 成 dict
           ssh_authorized_key: "{{ _ssh_key }}"
         status_code: [201]
         return_content: true
