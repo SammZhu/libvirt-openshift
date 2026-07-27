@@ -37,6 +37,9 @@ storage_mtu:          9000             # 建议两端统一 9000(实测:不统�
 #   bridge            = Phase 10 在 machine_nic 上建 Linux 桥 br-lan(有断连风险,谨慎)
 machine_net_mode:     macvtap
 unify_storage_mtu:    false            # true 时 Phase 10 把存储网桥 MTU 拉到 storage_mtu(rhel10 1500→9000)
+# 装机时给 VM 挂第二块存储网卡?若存储网与 machine 网同广播域,双网卡会让 assisted 报
+# non-overlapping-subnets。装机建议 false(只挂 machine 单网卡),10.10 存储网 Day2 用 NMState 加。
+attach_storage_nic:   false
 
 # ── OpenShift 集群网络 / ISO(Phase 20/30 用)──────────────────────────────────
 network_type:            OVNKubernetes
