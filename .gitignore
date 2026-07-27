@@ -1,5 +1,6 @@
-# Secrets & site-specific config — NEVER commit
+# Secrets & site-specific config — NEVER commit (keep the *.example.yml templates)
 group_vars/all.yml
+inventory.yml
 *.pull-secret*
 *offline-token*
 *.pem

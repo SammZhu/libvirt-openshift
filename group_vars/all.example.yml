@@ -1,65 +1,55 @@
 ---
 # Copy to group_vars/all.yml and edit. group_vars/all.yml is gitignored.
+# 设计:全 VM、双 KVM host、control-plane 兼 ODF(在 control-storage host)、
+#       worker 在 cnv-compute host 用 host-passthrough 跑嵌套 CNV、本地 LVMS。
 
 # ── Cluster identity ─────────────────────────────────────────────────────────
 cluster_name:        ocp
-base_domain:         lab.example.com
-# ⚠️ Pin to a specific patch (X.Y.Z), NOT channel form (X.Y). Assisted resolves
-# channel form to "latest" at create time, which can drift from what your offline
-# mirror holds. The offline path asserts this is X.Y.Z.
-openshift_version:   "4.18.10"
+base_domain:         lan               # api.{{cluster_name}}.{{base_domain}} / *.apps...
+openshift_version:   "4.16.20"         # ⚠️ X.Y.Z 精确补丁,非 channel 形;以 assisted /openshift-versions 为准
 cpu_architecture:    x86_64
 
-# ── Topology (3 control-plane + N worker) ────────────────────────────────────
-# For SNO set control_plane_count=1, worker_count=0 (Assisted high_availability_mode=None).
+# ── Topology(全 VM;3 master 兼 ODF + N worker 跑 CNV)──────────────────────────
 control_plane_count: 3
-worker_count:        2        # N
+masters_schedulable: true              # compact:master 可调度 + 兼 ODF 存储节点
+worker_count:        2                 # cnv-compute host 上的 CNV worker 数
 
-# ── Install method (axis 1) ──────────────────────────────────────────────────
-# assisted     → assisted-service REST bootstraps (site.yml). Uses `connectivity`.
-# agent-based  → ABI: generate an agent ISO locally, fully air-gapped, no REST
-#                (site-agent.yml). `connectivity` is ignored. (planned; assisted first)
-installation_method: assisted
-
-# ── Connectivity switch (axis 2 — assisted method only) ──────────────────────
-# online  → SaaS Assisted API (api.openshift.com); needs OCM offline token.
-# offline → local assisted-service (podman on the KVM host); air-gap capable,
-#           needs mirrored release images + local RHCOS live ISO.
-connectivity:        online
+# ── Install method × connectivity(两轴)───────────────────────────────────────
+installation_method: assisted          # assisted | agent-based(ABI, 规划中)
+connectivity:        online            # online=SaaS api.openshift.com | offline=本地 assisted-service
 assisted_saas_url:   https://api.openshift.com/api/assisted-install/v2
-# Offline endpoint: local assisted-service on the KVM host (default port 8090).
-assisted_onprem_url: "http://{{ hostvars[groups['kvm_host'][0]].ansible_host | default('127.0.0.1') }}:8090/api/assisted-install/v2"
+assisted_onprem_url: "http://{{ hostvars[groups['kvm_host'][0]].ansible_host }}:8090/api/assisted-install/v2"
 sso_url:             https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
 
-# ── Network (multi-node Assisted brings its own keepalived VIPs — no external LB) ──
-machine_network_cidr: 192.168.126.0/24
-api_vip:              192.168.126.100
-ingress_vip:          192.168.126.101
-# DNS must be pre-provisioned (Phase 00 verifies):
-#   api.{{ cluster_name }}.{{ base_domain }}      A  {{ api_vip }}
-#   *.apps.{{ cluster_name }}.{{ base_domain }}   A  {{ ingress_vip }}
+# ── 网络(双网:1G 管理/API + 10G 存储/迁移)────────────────────────────────────
+# machine network:节点 NIC1,装机/API/外部访问;多节点 assisted 自带 keepalived VIP
+machine_network_cidr: 192.168.1.0/24
+machine_bridge:       br-lan           # 桥到 host 的 1G 口(eno*);Phase 10 建
+api_vip:              192.168.1.200    # ← 空闲且不在路由器 DHCP 段
+ingress_vip:          192.168.1.201    # ← 空闲且不在 DHCP 段
+# storage/migration network:节点 NIC2,ODF 复制 + CNV 热迁移(10G 线速)
+storage_network_cidr: 10.10.0.0/24
+storage_mtu:          9000             # 建议两端统一 9000(实测:不统一 TCP 也线速,仅优化)
+# DNS 预置(Phase 00 校验):api.<c>.<b>→api_vip;*.apps.<c>.<b>→ingress_vip
 
-# ── libvirt / VM sizing (Assisted host-validation minimums for control plane) ──
-libvirt_network:     ocp-net           # created by Phase 10 if absent
-libvirt_pool:        default           # storage pool for VM disks
-master_vcpu:         4
-master_ram_mib:      16384
-master_disk_gib:     120               # Assisted rejects install disk < 100 GB
-worker_vcpu:         4
-worker_ram_mib:      16384
-worker_disk_gib:     120
+# ── VM 规格 ──────────────────────────────────────────────────────────────────
+master_vcpu:      8
+master_ram_mib:   24576
+master_disk_gib:  120                  # OS 盘;OSD 盘另给(见 osd_disks)
+worker_vcpu:      16
+worker_ram_mib:   32768
+worker_disk_gib:  120
+worker_cpu_mode:  host-passthrough     # ★嵌套 CNV 必须:把 vmx 透传进 worker VM
 
-# ── Files (resolved at runtime; never committed — see .gitignore) ────────────
-pull_secret_file:    "{{ lookup('env', 'HOME') }}/.pull-secret.json"
-ssh_pub_key_file:    "{{ lookup('env', 'HOME') }}/.ssh/id_rsa.pub"
-# offline token only needed for connectivity=online (from console.redhat.com):
-offline_token_file:  "{{ lookup('env', 'HOME') }}/.openshift/offline-token"
+# ── 存储 ─────────────────────────────────────────────────────────────────────
+odf_enabled:      true                 # OSD = 各 control-storage master 挂 1 块 osd_disks(host var)
+odf_replica:      3
+odf_min_size:     2                    # 关 cnv-compute host 时 ODF 仍可用(本设计 ODF 全在 cp host,不受影响)
+lvms_enabled:     true                 # cnv-compute host 的 local_storage_disk → 本地 storage class(给钉住的 CNV 虚机)
 
-# ── Output directory (kubeconfig, ISO, kubeadmin password) ───────────────────
-output_dir:          "{{ lookup('env', 'HOME') }}/openshift-install/{{ cluster_name }}"
+# ── 凭据(只走 env/文件,永不进仓库)──────────────────────────────────────────
+pull_secret_file:   "{{ lookup('env', 'HOME') }}/.pull-secret.json"
+ssh_pub_key_file:   "{{ lookup('env', 'HOME') }}/.ssh/id_rsa.pub"
+offline_token_file: "{{ lookup('env', 'HOME') }}/.openshift/offline-token"   # 仅 online 需要
 
-# ── Offline (connectivity=offline) extras ────────────────────────────────────
-# Local assisted-service + image-service must already be running (podman) and
-# release images mirrored into a local registry. See docs/RUNBOOK.md "Offline".
-rhcos_live_iso_path: "{{ lookup('env', 'HOME') }}/.openshift/rhcos-live.iso"
-local_registry:      ""                # e.g. registry.lab.example.com:5000
+output_dir:         "{{ lookup('env', 'HOME') }}/openshift-install/{{ cluster_name }}"

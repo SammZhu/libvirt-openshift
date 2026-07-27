@@ -1,10 +1,10 @@
 ---
-# Phase 00 — Day0 readiness. Fail fast, BEFORE creating any cluster/VM, on the
-# gotchas that otherwise surface halfway through install:
-#   driver:   required tools/files, Assisted API reachable, token mints, DNS+VIP DNS
-#   kvm_host: virtualization + nested-virt, libvirt, CPU/RAM/disk headroom, VIPs free
+# Phase 00 — Day0 readiness (据真硬件 2026-07-26 调准).
+#   driver (local):   工具/文件、Assisted API+版本、DNS、VIP 在网段
+#   kvm_host (每台):  虚拟化(+按需嵌套)、libvirt(virsh 非 libvirtd)、pool 存在、
+#                     该 host 的 VM 容量、ODF/LVMS 盘、存储网 MTU(告警)
 
-- name: Preflight — driver (Assisted API, credentials, DNS)
+- name: Preflight — driver (Assisted API / 凭据 / DNS)
   hosts: local
   gather_facts: true
   tasks:
@@ -32,12 +32,10 @@
       loop_control:
         label: "{{ item.item }}"
 
-    # Resolve base URL + (online) mint an access token. Fails here if the offline
-    # token is expired/invalid — far better than a 401 mid-install.
     - name: Resolve Assisted base URL + auth (online mints token)
       ansible.builtin.include_tasks: ../tasks/assisted_base.yml
 
-    - name: Verify Assisted API is reachable and lists the requested version
+    - name: Verify Assisted API reachable + lists requested version
       ansible.builtin.uri:
         url: "{{ assisted_base_url }}/openshift-versions"
         method: GET
@@ -45,141 +43,131 @@
         return_content: true
         status_code: 200
       register: _versions
-      no_log: false
 
-    - name: Assert requested OpenShift version is offered by Assisted
-      ansible.builtin.assert:
-        that: >-
-          (_versions.json.keys() | map('regex_search', '^' ~ (openshift_version.split('.')[0:2] | join('\.'))) | select('string') | list | length) > 0
-        fail_msg: >-
-          {{ openshift_version.split('.')[0:2] | join('.') }} not in Assisted version list
-          ({{ _versions.json.keys() | list }}). Pick a supported minor or (offline) mirror it.
-
-    # DNS: the #1 silent Day0 failure — install completes but ingress never comes up.
-    - name: Resolve api DNS record
-      ansible.builtin.command: "dig +short api.{{ cluster_name }}.{{ base_domain }}"
-      changed_when: false
-      check_mode: false
-      register: _api_dns
-
-    - name: Resolve *.apps wildcard DNS record
-      ansible.builtin.command: "dig +short test.apps.{{ cluster_name }}.{{ base_domain }}"
-      changed_when: false
-      check_mode: false
-      register: _apps_dns
-
-    - name: Assert api / *.apps DNS point at the VIPs
+    - name: Assert requested OpenShift minor is offered by Assisted
       ansible.builtin.assert:
         that:
-          - api_vip in _api_dns.stdout
-          - ingress_vip in _apps_dns.stdout
-        fail_msg: |
-          DNS not correctly pre-provisioned:
-            api.{{ cluster_name }}.{{ base_domain }}    → '{{ _api_dns.stdout | trim }}' (want {{ api_vip }})
-            *.apps.{{ cluster_name }}.{{ base_domain }} → '{{ _apps_dns.stdout | trim }}' (want {{ ingress_vip }})
-          Multi-node Assisted needs BOTH records before install (ingress silently fails otherwise).
+          - _versions.json.keys() | select('match', '^' ~ (openshift_version.split('.')[0:2] | join('\\.'))) | list | length > 0
+        fail_msg: >-
+          {{ openshift_version.split('.')[0:2] | join('.') }} 不在 Assisted 版本列表
+          ({{ _versions.json.keys() | list }})。换受支持的 minor,或 offline 先 mirror。
 
-    - name: Assert VIPs lie inside the machine network
+    - name: Resolve api / *.apps DNS
+      ansible.builtin.command: "dig +short {{ item }}.{{ cluster_name }}.{{ base_domain }}"
+      changed_when: false
+      check_mode: false
+      register: _dns
+      loop: [api, "test.apps"]
+
+    - name: Assert api / *.apps 指向 VIP
+      ansible.builtin.assert:
+        that:
+          - api_vip in _dns.results[0].stdout
+          - ingress_vip in _dns.results[1].stdout
+        fail_msg: |
+          DNS 未就位:
+            api.{{ cluster_name }}.{{ base_domain }}    → '{{ _dns.results[0].stdout | trim }}' (want {{ api_vip }})
+            *.apps.{{ cluster_name }}.{{ base_domain }} → '{{ _dns.results[1].stdout | trim }}' (want {{ ingress_vip }})
+          多节点 Assisted 装前两条都要有(否则 ingress 静默不起)。
+
+    - name: Assert VIP 落在 machine network
       ansible.builtin.assert:
         that:
           - api_vip | ansible.utils.ipaddr(machine_network_cidr)
           - ingress_vip | ansible.utils.ipaddr(machine_network_cidr)
-        fail_msg: "api_vip/ingress_vip must be within machine_network_cidr {{ machine_network_cidr }}."
+        fail_msg: "api_vip/ingress_vip 必须在 {{ machine_network_cidr }} 内。"
 
     - name: Driver preflight passed
       ansible.builtin.debug:
-        msg: "✓ Driver checks passed (connectivity={{ connectivity }}, api={{ assisted_base_url }})."
+        msg: "✓ driver OK (connectivity={{ connectivity }}, api={{ assisted_base_url }})"
 
-- name: Preflight — KVM host (virtualization, resources, VIPs free)
+- name: Preflight — 每台 KVM host
   hosts: kvm_host
   gather_facts: true
+  become: true                     # 以 root 跑:virsh/lsblk 免受 libvirt 组/polkit 影响
   vars:
-    _need_vcpu: "{{ control_plane_count | int * master_vcpu | int + worker_count | int * worker_vcpu | int }}"
-    _need_ram_mib: "{{ control_plane_count | int * master_ram_mib | int + worker_count | int * worker_ram_mib | int }}"
-    _need_disk_gib: "{{ control_plane_count | int * master_disk_gib | int + worker_count | int * worker_disk_gib | int }}"
+    _need_vcpu: "{{ masters_here | int * master_vcpu | int + workers_here | int * worker_vcpu | int }}"
+    _need_ram: "{{ masters_here | int * master_ram_mib | int + workers_here | int * worker_ram_mib | int }}"
   tasks:
-    - name: Verify CPU virtualization extensions present
-      ansible.builtin.command: "grep -Ecm1 '(vmx|svm)' /proc/cpuinfo"
+    - name: CPU 虚拟化扩展存在
+      ansible.builtin.command: "grep -Ec '(vmx|svm)' /proc/cpuinfo"
       changed_when: false
       check_mode: false
       register: _virt
       failed_when: _virt.stdout | int < 1
 
-    # If the KVM host is itself a VM, nested virt must be on or guest VMs boot
-    # without KVM accel → Assisted "insufficient CPU" host-validation failures.
-    - name: Detect whether nested virtualization is enabled (best-effort)
+    - name: 读嵌套虚拟化状态
       ansible.builtin.shell: "cat /sys/module/kvm_intel/parameters/nested /sys/module/kvm_amd/parameters/nested 2>/dev/null | grep -qiE '^(Y|1)' && echo yes || echo no"
       changed_when: false
       check_mode: false
       register: _nested
 
-    - name: Warn if nested virtualization looks disabled
-      ansible.builtin.debug:
-        msg: >-
-          ⚠️ nested virtualization not detected as enabled. If this host is a VM,
-          enable it (kvm_intel/kvm_amd nested=1) or guest VMs will fail Assisted CPU checks.
-      when: _nested.stdout is not search('yes')
-
-    - name: Verify libvirtd is active
-      ansible.builtin.command: systemctl is-active libvirtd
-      changed_when: false
-      check_mode: false
-      register: _libvirtd
-      failed_when: _libvirtd.stdout is not search('active')
-
-    - name: Verify virt-install and qemu-img are present
-      ansible.builtin.command: "command -v {{ item }}"
-      changed_when: false
-      check_mode: false
-      register: _virttools
-      failed_when: _virttools.rc != 0
-      loop: [virt-install, qemu-img, virsh]
-
-    - name: Read libvirt storage pool free capacity (bytes)
-      ansible.builtin.shell: "virsh pool-info --bytes {{ libvirt_pool }} | awk '/^Available:/ {print $2}'"
-      changed_when: false
-      check_mode: false
-      register: _pool_free
-
-    - name: Assert storage pool has room for all VM disks
+    - name: 断言嵌套虚拟化已开(仅 nested_required 的 host,如 cnv-compute)
       ansible.builtin.assert:
-        that: (_pool_free.stdout | int) > (_need_disk_gib | int * 1073741824)
+        that: _nested.stdout is search('yes')
         fail_msg: >-
-          libvirt pool '{{ libvirt_pool }}' has {{ (_pool_free.stdout | int / 1073741824) | round(1) }} GiB free,
-          need ~{{ _need_disk_gib }} GiB ({{ control_plane_count }}×{{ master_disk_gib }} + {{ worker_count }}×{{ worker_disk_gib }}).
+          {{ inventory_hostname }} 要跑嵌套 CNV,但嵌套虚拟化没开。
+          开:modprobe -r kvm_intel && modprobe kvm_intel nested=1(并持久化 /etc/modprobe.d/kvm.conf)。
+      when: nested_required | bool
 
-    - name: Assert enough host RAM
-      ansible.builtin.assert:
-        that: (ansible_memtotal_mb | int) > (_need_ram_mib | int)
-        fail_msg: "Host RAM {{ ansible_memtotal_mb }} MiB < needed {{ _need_ram_mib }} MiB."
-
-    - name: Assert enough host vCPU
-      ansible.builtin.assert:
-        that: (ansible_processor_vcpus | int) >= (_need_vcpu | int)
-        fail_msg: "Host vCPU {{ ansible_processor_vcpus }} < needed {{ _need_vcpu }}."
-
-    # VIPs must be UNUSED before install (keepalived claims them). A reply here
-    # means an IP conflict — the classic "install hangs at bootstrap" cause.
-    - name: Check API/Ingress VIPs are free (ping should NOT answer)
-      ansible.builtin.command: "ping -c1 -W1 {{ item }}"
+    - name: libvirt 可用(★查 virsh,不查 libvirtd.service —— RHEL9 模块化守护 libvirtd 常 inactive)
+      ansible.builtin.command: "virsh -c qemu:///system version"
       changed_when: false
       check_mode: false
-      failed_when: false
-      register: _vip_ping
-      loop: ["{{ api_vip }}", "{{ ingress_vip }}"]
+      register: _virsh
+      failed_when: _virsh.rc != 0
 
-    - name: Assert VIPs are free
+    - name: 列出 libvirt pool
+      ansible.builtin.command: "virsh -c qemu:///system pool-list --name"
+      changed_when: false
+      check_mode: false
+      register: _pools
+
+    - name: 断言配置的 vm_pool 存在(★不假设叫 default)
       ansible.builtin.assert:
-        that: item.rc != 0
-        fail_msg: "VIP {{ item.item }} already answers ping — IP conflict; pick a free address."
-      loop: "{{ _vip_ping.results }}"
+        that: vm_pool in (_pools.stdout_lines | map('trim') | list)
+        fail_msg: "libvirt pool '{{ vm_pool }}' 不存在;现有:{{ _pools.stdout_lines | map('trim') | select | list }}"
+
+    - name: 断言 host 有足够 vCPU / RAM 装本机的 VM
+      ansible.builtin.assert:
+        that:
+          - (ansible_processor_vcpus | int) >= (_need_vcpu | int)
+          - (ansible_memtotal_mb | int) > (_need_ram | int)
+        fail_msg: >-
+          {{ inventory_hostname }} 容量不足:need {{ _need_vcpu }} vCPU / {{ _need_ram }} MiB,
+          have {{ ansible_processor_vcpus }} vCPU / {{ ansible_memtotal_mb }} MiB。
+
+    - name: 检查 ODF OSD 裸盘(control-storage host)
+      ansible.builtin.command: "lsblk -pno NAME,FSTYPE,MOUNTPOINT {{ item }}"
+      changed_when: false
+      check_mode: false
+      register: _osd
+      failed_when: _osd.rc != 0 or (_osd.stdout_lines | length) > 1 or ((_osd.stdout.split() | length) > 2)
+      loop: "{{ osd_disks | default([]) }}"
       loop_control:
-        label: "{{ item.item }}"
+        label: "{{ item }}"
+      # >1 行 = 有分区;>2 字段(NAME+SIZE 之外还有 fstype/挂载)= 非裸盘,ODF 不能用
+
+    - name: 检查本地 LVMS 盘存在(cnv-compute host)
+      ansible.builtin.stat:
+        path: "{{ local_storage_disk }}"
+      register: _lvms
+      failed_when: not _lvms.stat.exists
+      when: (local_storage_disk | default('')) | length > 0
+
+    - name: 存储网桥 MTU
+      ansible.builtin.shell: "cat /sys/class/net/{{ storage_bridge }}/mtu 2>/dev/null || echo 0"
+      changed_when: false
+      check_mode: false
+      register: _mtu
+
+    - name: 提示 MTU 不一致(告警,非阻断 —— 实测 TCP 不统一也线速,统一 9000 是优化)
+      ansible.builtin.debug:
+        msg: "⚠️ {{ storage_bridge }} MTU={{ _mtu.stdout | trim }},建议统一 {{ storage_mtu }}(存储/迁移网优化;不统一 TCP 也线速)"
+      when: (_mtu.stdout | trim | int) != (storage_mtu | int)
 
     - name: KVM host preflight passed
       ansible.builtin.debug:
-        msg: |
-          ✓ KVM host checks passed. Capacity for {{ control_plane_count }}+{{ worker_count }} VMs:
-            vCPU need {{ _need_vcpu }} / have {{ ansible_processor_vcpus }}
-            RAM  need {{ _need_ram_mib }} MiB / have {{ ansible_memtotal_mb }} MiB
-          Next: ansible-playbook playbooks/10-network.yml
+        msg: >-
+          ✓ {{ inventory_hostname }} ({{ vm_role }}) OK — 需 {{ _need_vcpu }}c/{{ _need_ram }}MiB /
+          有 {{ ansible_processor_vcpus }}c/{{ ansible_memtotal_mb }}MiB; pool={{ vm_pool }}; nested={{ _nested.stdout }}

@@ -17,23 +17,26 @@
 > phase 编号 playbook、`surface_errors` 回调、`run_cli`、`installation_method` 开关、ansible-lint 门禁、
 > `make demo` + QUICKSTART 三段式约定。
 
-## 拓扑（3 台机器,终态 = OpenShift Virtualization / CNV 实验环境）
+## 拓扑（全 VM,双 KVM host,终态 = OpenShift Virtualization / CNV 实验环境）
 
 ```
-  RHEL8 (Ansible 控制节点)          RHEL9 rhdemo (KVM host)              RHEL10 OpenShiftV (物理机)
-  ├─ git clone 本工程         ─SSH─► ├─ libvirt: ocp-net                  ├─ 裸金属 worker,加入同集群
-  └─ ansible-playbook              │  ├─ master-0/1/2 (VM,control)      │  ├─ 本地裸盘 → ODF 存储
-     (assisted API 调用/编排)      │  └─ worker VM ×n (可选)             │  └─ 原生虚拟化 → 跑 CNV 虚机
-                                    │  ★nested virt 必开(VM 节点要跑 CNV)  DNS: api/*.apps → VIP
-                                    └─ 从 discovery ISO 引导注册           物理机走虚拟介质/USB/PXE 引导注册
-   API VIP / Ingress VIP (keepalived,多节点 assisted 自带,无需外部 LB)
+  RHEL8 (Ansible 控制节点)     rhdemo RHEL9 32c/251G (常开)       rhel10 RHEL10 80c/125G (按需开,省电)
+  ├─ git clone 本工程     ─SSH─► ├─ master-0/1/2 (VM,可调度,兼 ODF)  ├─ worker-0/1 (VM, host-passthrough)
+  └─ ansible-playbook          │   └─ 各挂 1 块裸 NVMe → ODF 3-OSD  │   └─ 嵌套跑 CNV 虚机
+     (assisted API 编排)        │  控制面 + 存储都在此              │  数据盘取自 nvme0 1.8T → 本地 LVMS
+                                └─ 关 rhel10 → 集群+ODF 全在,只 CNV 停
+  网络: machine=192.168.1(1G, API/VIP) │ 存储+迁移=10.10(10G 线速, br-ovs)
+  VIP: API/Ingress keepalived(多节点 assisted 自带,无需外部 LB)
 ```
 
-- **RHEL8** —— Ansible 客户端(= srv-down),clone 本工程、跑 playbook;不装任何节点。
-- **RHEL9 `rhdemo`** —— libvirt KVM host,承载 OpenShift **control plane(3 VM)** +（可选)VM worker。VM 节点要跑 CNV,所以 **nested virt 必开**(不再是"可选告警")。
-- **RHEL10 `OpenShiftV`** —— **物理裸金属 worker**,加入同一集群:本地裸盘供 **ODF** 存储、原生虚拟化承载 **OpenShift Virtualization(CNV)** 虚机。
+- **RHEL8**(= srv-down)—— Ansible 客户端,clone 工程跑 playbook,不装节点。
+- **rhdemo RHEL9** —— KVM host(常开):3 个可调度 master VM,兼 ODF 存储节点(3 块裸 NVMe 各做 1 OSD)。控制面 + 存储都在此,关 rhel10 也不受影响。
+- **rhel10 RHEL10** —— KVM host(按需开):2 个 worker VM,`--cpu host-passthrough` 透传 vmx → **嵌套跑 CNV**;nvme0(1.8T)做节点本地 LVMS。
 
-> 混合节点(VM + 物理机)在**同一个 assisted infra-env** 里注册:VM 由 `virt-install` 从 discovery ISO 引导,物理机由虚拟介质/USB/PXE 从同一 ISO 引导。装完集群后,Day2 落 **ODF operator + CNV operator** 构成虚拟化环境。
+> 全部 OpenShift 节点都是 VM(无裸金属节点),两台都是 libvirt host。所有节点在**同一 assisted infra-env**注册。
+> **嵌套 CNV = Red Hat 仅支持 dev/test(非生产)**,性能有损耗——本 lab 用于学习/沉淀 Skill,可接受。
+> 装完 Day2 落 **ODF operator**(rhdemo 三盘)+ **CNV operator**(rhel10 worker)+ **LVMS**(rhel10 本地盘)。
+> 双轴仍在:`installation_method`(assisted/ABI)× `connectivity`(online/offline)。
 
 ## Phase 编排
 

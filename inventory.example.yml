@@ -1,0 +1,39 @@
+---
+# Copy to inventory.yml and fill real IPs/disks. inventory.yml is gitignored.
+#
+# 3 roles:
+#   local     — RHEL8 Ansible 控制节点. 跑所有 phase / assisted API / DNS+token 校验.
+#   kvm_host  — 承载 OpenShift 节点 VM 的 libvirt/KVM host(可多台). 本设计两台都是 KVM host,
+#               所有 OpenShift 节点都是 VM(无裸金属节点):
+#                 · control-storage host → 跑 control-plane(可调度,兼 ODF)
+#                 · cnv-compute    host → 跑 worker VM,host-passthrough 起嵌套 CNV
+all:
+  hosts:
+    local:
+      ansible_connection: local
+      ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  children:
+    kvm_host:
+      vars:
+        ansible_user: ansible          # 专用服务账户(免密 sudo + libvirt 组)
+      hosts:
+        # ── 控制面 + 存储 host(常开)──
+        kvmhost-cp:
+          ansible_host: 10.0.0.9        # ← control-storage host IP
+          vm_role: control-storage
+          masters_here: 3               # 3 master VM 在这
+          workers_here: 0
+          nested_required: false        # CNV 不在这跑
+          vm_pool: default              # ← 真实 libvirt pool 名(本机可能叫 VMs/images)
+          osd_disks: []                 # ← ODF OSD 用的整块裸盘, e.g. [/dev/nvme1n1, ...] 每 master 一块
+          storage_bridge: br-ovs        # 10G 存储/迁移网 OVS 桥
+        # ── CNV 计算 host(按需开,省电)──
+        kvmhost-cnv:
+          ansible_host: 10.0.0.10       # ← cnv-compute host IP
+          vm_role: cnv-compute
+          masters_here: 0
+          workers_here: 2               # 2 worker VM 在这
+          nested_required: true         # ★嵌套 CNV → nested 必开 + VM host-passthrough
+          vm_pool: default
+          local_storage_disk: ""        # ← 本地 LVMS 盘, e.g. /dev/nvme0n1(需先腾空)
+          storage_bridge: br-ovs
