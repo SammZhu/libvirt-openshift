@@ -9,7 +9,7 @@
   gather_facts: true
   tasks:
     - name: Verify required CLI tools on the driver
-      ansible.builtin.command: "{{ item }} --version"
+      ansible.builtin.shell: "command -v {{ item }}"
       changed_when: false
       check_mode: false
       register: _tool
