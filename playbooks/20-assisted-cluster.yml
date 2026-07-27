@@ -25,9 +25,9 @@
 
     - name: Set secrets as facts
       ansible.builtin.set_fact:
-        # 双表达式:阻止 jinja2_native 把 JSON 形 pull_secret literal_eval 成 dict(须在 set_fact 处就挡)
-        _pull_secret: "{{ (_ps_slurp.content | b64decode | trim) }}{{ '' }}"
-        _ssh_key: "{{ (_key_slurp.content | b64decode | trim) }}{{ '' }}"
+        # ★| string:阻止 jinja2_native 把 JSON 形 pull_secret literal_eval 成 dict(→ NativeJinjaUnsafeText 字符串)
+        _pull_secret: "{{ (_ps_slurp.content | b64decode | trim) | string }}"
+        _ssh_key: "{{ (_key_slurp.content | b64decode | trim) | string }}"
       no_log: true
 
     # ── 建 cluster ──
@@ -52,7 +52,7 @@
           api_vips: [{ip: "{{ api_vip }}"}]
           ingress_vips: [{ip: "{{ ingress_vip }}"}]
           additional_ntp_source: "{{ additional_ntp_sources }}"
-          pull_secret: "{{ _pull_secret }}{{ '' }}"   # 双表达式:阻止 jinja2_native 把 JSON 串 literal_eval 成 dict
+          pull_secret: "{{ _pull_secret | string }}"   # ★| string:保持字符串(jinja2_native 否则把 JSON 串 eval 成 dict)
           ssh_public_key: "{{ _ssh_key }}"
         status_code: [201]
         return_content: true
@@ -88,7 +88,7 @@
           cluster_id: "{{ cluster_id }}"
           image_type: "{{ image_type }}"
           additional_ntp_sources: "{{ additional_ntp_sources }}"
-          pull_secret: "{{ _pull_secret }}{{ '' }}"   # 双表达式:阻止 jinja2_native 把 JSON 串 literal_eval 成 dict
+          pull_secret: "{{ _pull_secret | string }}"   # ★| string:保持字符串(jinja2_native 否则把 JSON 串 eval 成 dict)
           ssh_authorized_key: "{{ _ssh_key }}"
         status_code: [201]
         return_content: true
