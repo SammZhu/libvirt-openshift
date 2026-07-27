@@ -1,15 +1,20 @@
-# openshift-assisted-onhost
+# libvirt-openshift
 
-用 **Ansible** 把 OpenShift(**3 control-plane + N worker**)装到 **RHEL host 上的 libvirt/KVM VM** 里,
-走 **Assisted Installer**。一套 playbook,`connectivity` 开关切换:
+用 **Ansible** 把 OpenShift(**3 control-plane + N worker**)装到 **RHEL host 上的 libvirt/KVM VM** 里。
+名字按**底座**取(libvirt),不绑安装方法——安装方法是可切换的一轴。
 
-- `online` —— SaaS Assisted API(`api.openshift.com`),connected 环境,`OCM_OFFLINE_TOKEN` 换 access token。
-- `offline` —— 本地 `assisted-service`(podman 起,可 air-gap),API 指本地端点,release 镜像本地 mirror。
+**两轴模型:**
 
-两条路走完 discovery ISO → VM 起盘 → host 注册 → 校验 → install 是**共享**的下游。
+- **`installation_method`**(装法) —— `assisted`(assisted-service REST 引导)/ `agent-based`(ABI,离线自足,生成 agent ISO,无需 REST;走 `site-agent.yml`,借鉴 `alibaba-openshift`)。
+- **`connectivity`**(连接性,仅 `assisted` 用) —— `online` = SaaS `api.openshift.com`(`OCM_OFFLINE_TOKEN` 换 access token)/ `offline` = 本地 `assisted-service`(podman,air-gap,release 本地 mirror)。
 
+三条路(assisted-online / assisted-offline / ABI)走完 **discovery/agent ISO → VM 起盘 → host 注册 → 校验 → install** 是**共享**的下游。
+
+> 当前 **assisted 路径优先实现**(Phase 00 preflight 已落地);ABI 走 `site-agent.yml`,与 `alibaba-openshift`
+> 的 `installation_method: Assisted|Agent-based` 同构。
+>
 > 姊妹项目 `alibaba-openshift` 装在阿里云 ECS;本项目底座换成 host 上的 libvirt VM,沿用其
-> phase 编号 playbook、render-local/apply-remote、`connectivity` 开关、ansible-lint 门禁、
+> phase 编号 playbook、`surface_errors` 回调、`run_cli`、`installation_method` 开关、ansible-lint 门禁、
 > `make demo` + QUICKSTART 三段式约定。
 
 ## 拓扑

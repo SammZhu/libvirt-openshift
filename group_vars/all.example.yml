@@ -15,7 +15,13 @@ cpu_architecture:    x86_64
 control_plane_count: 3
 worker_count:        2        # N
 
-# ── Connectivity switch (THE online/offline knob) ────────────────────────────
+# ── Install method (axis 1) ──────────────────────────────────────────────────
+# assisted     → assisted-service REST bootstraps (site.yml). Uses `connectivity`.
+# agent-based  → ABI: generate an agent ISO locally, fully air-gapped, no REST
+#                (site-agent.yml). `connectivity` is ignored. (planned; assisted first)
+installation_method: assisted
+
+# ── Connectivity switch (axis 2 — assisted method only) ──────────────────────
 # online  → SaaS Assisted API (api.openshift.com); needs OCM offline token.
 # offline → local assisted-service (podman on the KVM host); air-gap capable,
 #           needs mirrored release images + local RHCOS live ISO.
