@@ -25,8 +25,9 @@
 
     - name: Set secrets as facts
       ansible.builtin.set_fact:
-        _pull_secret: "{{ _ps_slurp.content | b64decode | trim }}"
-        _ssh_key: "{{ _key_slurp.content | b64decode | trim }}"
+        # 双表达式:阻止 jinja2_native 把 JSON 形 pull_secret literal_eval 成 dict(须在 set_fact 处就挡)
+        _pull_secret: "{{ (_ps_slurp.content | b64decode | trim) }}{{ '' }}"
+        _ssh_key: "{{ (_key_slurp.content | b64decode | trim) }}{{ '' }}"
       no_log: true
 
     # ── 建 cluster ──
