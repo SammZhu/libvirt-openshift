@@ -70,12 +70,12 @@
             *.apps.{{ cluster_name }}.{{ base_domain }} → '{{ _dns.results[1].stdout | trim }}' (want {{ ingress_vip }})
           多节点 Assisted 装前两条都要有(否则 ingress 静默不起)。
 
-    - name: Assert VIP 落在 machine network
+    - name: Assert VIP 与 machine network 同段(/24 前缀比对,免 netaddr 依赖)
       ansible.builtin.assert:
         that:
-          - api_vip | ansible.utils.ipaddr(machine_network_cidr)
-          - ingress_vip | ansible.utils.ipaddr(machine_network_cidr)
-        fail_msg: "api_vip/ingress_vip 必须在 {{ machine_network_cidr }} 内。"
+          - (api_vip.split('.')[0:3] | join('.')) == (machine_network_cidr.split('/')[0].split('.')[0:3] | join('.'))
+          - (ingress_vip.split('.')[0:3] | join('.')) == (machine_network_cidr.split('/')[0].split('.')[0:3] | join('.'))
+        fail_msg: "api_vip/ingress_vip 必须与 {{ machine_network_cidr }} 同 /24 段。"
 
     - name: Driver preflight passed
       ansible.builtin.debug:
