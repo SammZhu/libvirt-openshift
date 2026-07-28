@@ -30,16 +30,19 @@
         loop_var: host
         label: "{{ host.id[0:8] }}"
 
-    - name: 按 machine MAC 匹配 host ↔ node
+    - name: 按 machine MAC 匹配 host ↔ node(+ 选 vda 为安装盘)
       ansible.builtin.set_fact:
-        _pairs: "{{ _pairs | default([]) + [{'hid': item.json.id, 'role': _node.role, 'name': _node.name}] }}"
+        _pairs: "{{ _pairs | default([]) + [{'hid': item.json.id, 'role': _node.role, 'name': _node.name, 'disk': _vda}] }}"
       loop: "{{ _full.results }}"
       loop_control:
         loop_var: item
         label: "{{ item.json.id[0:8] }}"
       vars:
-        _macs: "{{ (item.json.inventory | from_json).interfaces | map(attribute='mac_address') | list }}"
+        _inv: "{{ item.json.inventory | from_json }}"
+        _macs: "{{ _inv.interfaces | map(attribute='mac_address') | list }}"
         _node: "{{ nodes | selectattr('mmac', 'in', _macs) | first }}"
+        # ★安装盘钉 vda(120G OS 盘);否则 assisted 默认挑最大盘=vdb(1TB NVMe/OSD),会装错盘
+        _vda: "{{ _inv.disks | selectattr('name', 'equalto', 'vda') | map(attribute='id') | first }}"
       when: (item.json.inventory | default('')) | length > 0
 
     - name: 设角色 + 主机名(PATCH host)
@@ -51,10 +54,13 @@
         body:
           host_role: "{{ item.role }}"
           host_name: "{{ item.name }}"
+          disks_selected_config:
+            - id: "{{ item.disk }}"
+              role: install
         status_code: [201]
       loop: "{{ _pairs }}"
       loop_control:
-        label: "{{ item.name }} => {{ item.role }}"
+        label: "{{ item.name }} => {{ item.role }} (install→{{ item.disk | basename }})"
 
     - name: 等集群 ready(角色定完重新校验)
       ansible.builtin.uri:
