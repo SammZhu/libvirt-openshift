@@ -23,20 +23,26 @@
         status_code: [202]
       when: _c0.json.status == 'ready'
 
-    - name: 轮询安装进度(到 installed/error;最长约 2h)
-      ansible.builtin.uri:
-        url: "{{ assisted_base_url }}/clusters/{{ cluster_id }}"
-        headers: "{{ assisted_headers }}"
-      register: _c
-      until: _c.json.status in ['installed', 'error', 'cancelled']
-      retries: 120
-      delay: 60
-
-    - name: 断言安装成功
-      ansible.builtin.assert:
-        that: _c.json.status == 'installed'
-        fail_msg: "安装未成功:status={{ _c.json.status }} ({{ _c.json.status_info }})"
+    # 装机 ~1h,SaaS token 仅 ~15min TTL → 轮询里每轮重新 mint(online);到 installed/error 退出。
+    - name: 轮询安装进度(每轮刷新 token,规避 TTL)
+      ansible.builtin.shell: |
+        set -o pipefail
+        for i in $(seq 1 150); do
+          AT=$(curl -s --max-time 20 "{{ sso_url }}" -d grant_type=refresh_token -d client_id=cloud-services \
+                 -d refresh_token="$(cat {{ offline_token_file }})" | jq -r .access_token)
+          R=$(curl -s --max-time 20 "{{ assisted_base_url }}/clusters/{{ cluster_id }}" -H "Authorization: Bearer $AT")
+          S=$(echo "$R" | jq -r .status); P=$(echo "$R" | jq -r '.progress.total_percentage // 0')
+          echo "[$(date +%H:%M:%S)] status=$S progress=${P}%"
+          case "$S" in installed) exit 0;; error|cancelled) echo "$R" | jq -r .status_info; exit 2;; esac
+          sleep 60
+        done
+        echo "超时"; exit 3
+      args:
+        executable: /bin/bash
+      register: _poll
+      changed_when: false
+      failed_when: _poll.rc != 0
 
     - name: Phase 60 done
       ansible.builtin.debug:
-        msg: "✓ 集群安装完成 status={{ _c.json.status }} → Phase 90 取 kubeconfig"
+        msg: "✓ 集群安装完成(installed)→ Phase 90 取 kubeconfig"
