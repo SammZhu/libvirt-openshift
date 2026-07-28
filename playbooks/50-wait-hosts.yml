@@ -1,10 +1,60 @@
 ---
-# Phase 50 — wait for host registration + validations  (TODO: implement — see README phase table)
-# Poll {{ assisted_base_url }}/clusters/{id}/hosts until all register and Assisted validations pass; surface failing validations.
-- name: Phase 50 — wait for host registration + validations
+# Phase 50 — 等所有节点注册 → 按 machine MAC 匹配 nodes 表设角色+主机名 → 等集群 ready.
+#   ★必须显式设角色:rhdemo 三台(带 ODF 裸盘)=master,rhel10 两台=worker;
+#   否则 auto-assign 可能按资源把 rhel10(80c/125G)选成 master,ODF 盘就不在 master 上了。
+- name: Phase 50 — 角色/主机名 + 就绪
   hosts: local
   gather_facts: false
   tasks:
-    - name: Not yet implemented
+    - name: Resolve Assisted base URL + auth
+      ansible.builtin.include_tasks: ../tasks/assisted_base.yml
+    - name: Load state
+      ansible.builtin.include_tasks: ../tasks/load_state.yml
+
+    - name: 等所有节点注册({{ nodes | length }} 台)
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/clusters/{{ cluster_id }}/hosts"
+        headers: "{{ assisted_headers }}"
+      register: _h
+      until: (_h.json | length) >= (nodes | length)
+      retries: 30
+      delay: 20
+
+    - name: 按 machine MAC 匹配 host ↔ node
+      ansible.builtin.set_fact:
+        _pairs: "{{ _pairs | default([]) + [{'hid': host.id, 'role': _node.role, 'name': _node.name}] }}"
+      loop: "{{ _h.json }}"
+      loop_control:
+        loop_var: host
+        label: "{{ host.id[0:8] }}"
+      vars:
+        _macs: "{{ (host.inventory | from_json).interfaces | map(attribute='mac_address') | list }}"
+        _node: "{{ nodes | selectattr('mmac', 'in', _macs) | first }}"
+      when: (host.inventory | default('')) | length > 0
+
+    - name: 设角色 + 主机名(PATCH host)
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/infra-envs/{{ infra_env_id }}/hosts/{{ item.hid }}"
+        method: PATCH
+        headers: "{{ assisted_headers | combine({'Content-Type': 'application/json'}) }}"
+        body_format: json
+        body:
+          host_role: "{{ item.role }}"
+          host_name: "{{ item.name }}"
+        status_code: [201]
+      loop: "{{ _pairs }}"
+      loop_control:
+        label: "{{ item.name }} => {{ item.role }}"
+
+    - name: 等集群 ready(角色定完重新校验)
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/clusters/{{ cluster_id }}"
+        headers: "{{ assisted_headers }}"
+      register: _c
+      until: _c.json.status == 'ready'
+      retries: 20
+      delay: 15
+
+    - name: Phase 50 done
       ansible.builtin.debug:
-        msg: "50-wait-hosts.yml is a stub — Poll {{ assisted_base_url }}/clusters/{id}/hosts until all register and Assisted validations pass; surface failing validations."
+        msg: "✓ 角色/主机名已设;集群 status={{ _c.json.status }} → 可 Phase 60 安装"

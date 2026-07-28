@@ -1,10 +1,42 @@
 ---
-# Phase 60 — set roles, trigger install, poll  (TODO: implement — see README phase table)
-# Assign master/worker roles, POST /actions/install, poll cluster status to installed; surface per-host progress.
-- name: Phase 60 — set roles, trigger install, poll
+# Phase 60 — 触发安装 + 轮询到 installed(在线从 quay/registry.redhat.io 拉镜像,可能 ~1h).
+- name: Phase 60 — 安装集群
   hosts: local
   gather_facts: false
   tasks:
-    - name: Not yet implemented
+    - name: Resolve Assisted base URL + auth
+      ansible.builtin.include_tasks: ../tasks/assisted_base.yml
+    - name: Load state
+      ansible.builtin.include_tasks: ../tasks/load_state.yml
+
+    - name: 查当前集群状态
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/clusters/{{ cluster_id }}"
+        headers: "{{ assisted_headers }}"
+      register: _c0
+
+    - name: 触发安装(仅 ready 时)
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/clusters/{{ cluster_id }}/actions/install"
+        method: POST
+        headers: "{{ assisted_headers }}"
+        status_code: [202]
+      when: _c0.json.status == 'ready'
+
+    - name: 轮询安装进度(到 installed/error;最长约 2h)
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/clusters/{{ cluster_id }}"
+        headers: "{{ assisted_headers }}"
+      register: _c
+      until: _c.json.status in ['installed', 'error', 'cancelled']
+      retries: 120
+      delay: 60
+
+    - name: 断言安装成功
+      ansible.builtin.assert:
+        that: _c.json.status == 'installed'
+        fail_msg: "安装未成功:status={{ _c.json.status }} ({{ _c.json.status_info }})"
+
+    - name: Phase 60 done
       ansible.builtin.debug:
-        msg: "60-install.yml is a stub — Assign master/worker roles, POST /actions/install, poll cluster status to installed; surface per-host progress."
+        msg: "✓ 集群安装完成 status={{ _c.json.status }} → Phase 90 取 kubeconfig"

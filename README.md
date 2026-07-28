@@ -48,9 +48,9 @@
 | 25 | `playbooks/25-static-network.yml` | 下发每节点静态网络(NMState:eth0 machine / eth1 10G storage)到 infra-env | ✅ 已实现 |
 | 30 | `playbooks/30-discovery-iso.yml` | 取 discovery ISO 到各 host pool | ✅ live 验 |
 | 40 | `playbooks/40-vms.yml` | `virt-install` master×3(+OSD 裸盘直通)/ worker×N(host-passthrough+LVMS 盘),双网卡,从 ISO 引导 | ✅ 已实现 |
-| 50 | `playbooks/50-wait-hosts.yml` | 轮询 host 注册 + assisted 校验通过 | 🚧 stub |
-| 60 | `playbooks/60-install.yml` | 定角色、触发安装、轮询进度 | 🚧 stub |
-| 90 | `playbooks/90-kubeconfig.yml` | 取 kubeconfig / kubeadmin 密码 | 🚧 stub |
+| 50 | `playbooks/50-wait-hosts.yml` | 等注册 + 按 MAC 匹配 nodes 设角色/主机名 + 等 ready | ✅ 已实现 |
+| 60 | `playbooks/60-install.yml` | 触发安装 + 轮询到 installed | ✅ 已实现 |
+| 90 | `playbooks/90-kubeconfig.yml` | 取 kubeconfig / kubeadmin / console | ✅ 已实现 |
 
 `site.yml` 按顺序串起来。
 
