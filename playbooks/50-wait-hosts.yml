@@ -20,17 +20,27 @@
       retries: 30
       delay: 20
 
-    - name: 按 machine MAC 匹配 host ↔ node
-      ansible.builtin.set_fact:
-        _pairs: "{{ _pairs | default([]) + [{'hid': host.id, 'role': _node.role, 'name': _node.name}] }}"
+    - name: 取每 host 详情(list 不含 inventory,需单独 GET)
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/infra-envs/{{ infra_env_id }}/hosts/{{ host.id }}"
+        headers: "{{ assisted_headers }}"
+      register: _full
       loop: "{{ _h.json }}"
       loop_control:
         loop_var: host
         label: "{{ host.id[0:8] }}"
+
+    - name: 按 machine MAC 匹配 host ↔ node
+      ansible.builtin.set_fact:
+        _pairs: "{{ _pairs | default([]) + [{'hid': item.json.id, 'role': _node.role, 'name': _node.name}] }}"
+      loop: "{{ _full.results }}"
+      loop_control:
+        loop_var: item
+        label: "{{ item.json.id[0:8] }}"
       vars:
-        _macs: "{{ (host.inventory | from_json).interfaces | map(attribute='mac_address') | list }}"
+        _macs: "{{ (item.json.inventory | from_json).interfaces | map(attribute='mac_address') | list }}"
         _node: "{{ nodes | selectattr('mmac', 'in', _macs) | first }}"
-      when: (host.inventory | default('')) | length > 0
+      when: (item.json.inventory | default('')) | length > 0
 
     - name: 设角色 + 主机名(PATCH host)
       ansible.builtin.uri:
