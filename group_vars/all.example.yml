@@ -40,6 +40,9 @@ unify_storage_mtu:    false            # true 时 Phase 10 把存储网桥 MTU �
 # 装机时给 VM 挂第二块存储网卡?若存储网与 machine 网同广播域,双网卡会让 assisted 报
 # non-overlapping-subnets。装机建议 false(只挂 machine 单网卡),10.10 存储网 Day2 用 NMState 加。
 attach_storage_nic:   false
+# ★安装盘由人显式决定(非 assisted 自动挑最大盘):指定 OS 盘名。多盘节点(OS+ODF/LVMS)
+#   必须设成 OS 盘,否则 RHCOS 装到数据盘。可在 nodes 里加 idisk 覆盖单节点。
+install_disk_name:    vda
 
 # ── OpenShift 集群网络 / ISO(Phase 20/30 用)──────────────────────────────────
 network_type:            OVNKubernetes

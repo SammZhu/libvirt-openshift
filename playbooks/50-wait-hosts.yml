@@ -41,8 +41,9 @@
         _inv: "{{ item.json.inventory | from_json }}"
         _macs: "{{ _inv.interfaces | map(attribute='mac_address') | list }}"
         _node: "{{ nodes | selectattr('mmac', 'in', _macs) | first }}"
-        # ★安装盘钉 vda(120G OS 盘);否则 assisted 默认挑最大盘=vdb(1TB NVMe/OSD),会装错盘
-        _vda: "{{ _inv.disks | selectattr('name', 'equalto', 'vda') | map(attribute='id') | first }}"
+        # ★安装盘由配置显式决定(install_disk_name,或 node.idisk 覆盖);不用 assisted 自动选(会挑最大盘)
+        _dname: "{{ _node.idisk | default(install_disk_name) }}"
+        _vda: "{{ _inv.disks | selectattr('name', 'equalto', _dname) | map(attribute='id') | first }}"
       when: (item.json.inventory | default('')) | length > 0
 
     - name: 设角色 + 主机名(PATCH host)
