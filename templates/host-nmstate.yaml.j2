@@ -1,0 +1,32 @@
+interfaces:
+  - name: eth0                      # machine network(1G,macvtap→eno),带网关+DNS
+    type: ethernet
+    state: up
+    ipv4:
+      enabled: true
+      dhcp: false
+      address:
+        - ip: {{ node.mip }}
+          prefix-length: 24
+    ipv6:
+      enabled: false
+  - name: eth1                      # storage/migration network(10G,br-ovs),无网关/DNS
+    type: ethernet
+    state: up
+    ipv4:
+      enabled: true
+      dhcp: false
+      address:
+        - ip: {{ node.sip }}
+          prefix-length: 24
+    ipv6:
+      enabled: false
+dns-resolver:
+  config:
+    server:
+      - {{ machine_dns }}
+routes:
+  config:
+    - destination: 0.0.0.0/0
+      next-hop-address: {{ machine_gateway }}
+      next-hop-interface: eth0

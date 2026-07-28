@@ -1,17 +1,13 @@
 ---
-# Phase 40 — virt-install 起 OpenShift 节点 VM,从 discovery ISO 引导注册.
-#   control-storage host: N master —— OS 盘(pool qcow2)+ OSD 盘(osd_disks 裸盘直通)
-#   cnv-compute    host: N worker —— OS 盘 + LVMS 数据盘(pool qcow2 thin);--cpu host-passthrough 透传 vmx 跑嵌套 CNV
-#   两网卡:machine=macvtap(machine_nic)+ storage=OVS(br-ovs);--boot hd,cdrom(空盘→先引导 ISO,装完→引导硬盘)
-#   幂等:同名域已存在则跳过.
+# Phase 40 — virt-install 起 OpenShift 节点 VM(B 方案:节点表驱动 + 双网卡钉 MAC).
+#   节点来自 group_vars `nodes`(按 host 过滤):master 在 rhdemo(OSD 裸盘直通),worker 在 rhel10(host-passthrough+LVMS)。
+#   两网卡钉死 MAC:eth0=machine(macvtap→machine_nic,node.mmac)/ eth1=storage(br-ovs 10G,node.smac);
+#   MAC 与 infra-env static_network_config(Phase 25)对应,静态 IP 由 ISO 内 NMState 下发。
+#   --boot hd,cdrom(空盘→先引导 ISO,装完→引导硬盘)。幂等:同名域存在则跳过。
 - name: Phase 40 — virt-install 节点 VM
   hosts: kvm_host
   gather_facts: false
   become: true
-  vars:
-    # 装机时是否挂第二块(存储)网卡。默认 false:只挂 machine 单网卡,避免 assisted
-    # non-overlapping-subnets(存储网与 LAN 同段时)。10.10 存储网 Day2 用 NMState 加。
-    _storage_net: "{{ ('--network type=bridge,source=' ~ storage_bridge ~ ',virtualport_type=openvswitch,model=virtio') if (attach_storage_nic | default(false) | bool) else '' }}"
   tasks:
     - name: 查 pool 路径
       ansible.builtin.shell: "virsh -c qemu:///system pool-dumpxml {{ vm_pool }} | grep -oP '(?<=<path>)[^<]+'"
@@ -34,48 +30,30 @@
       changed_when: false
       register: _doms
 
-    # ── masters(control-storage host)──
-    - name: virt-install master VM(OS 盘 + OSD 裸盘直通)
+    - name: virt-install 节点 VM(双网卡钉 MAC:eth0 machine / eth1 10G storage)
       ansible.builtin.shell: |
-        virt-install --connect qemu:///system --name {{ cluster_name }}-master-{{ item }} \
-          --vcpus {{ master_vcpu }} --memory {{ master_ram_mib }} --cpu host-passthrough \
-          --disk path={{ _poolpath }}/{{ cluster_name }}-master-{{ item }}.qcow2,size={{ master_disk_gib }},format=qcow2,bus=virtio \
-          --disk path={{ osd_disks[item | int] }},bus=virtio \
+        virt-install --connect qemu:///system --name {{ cluster_name }}-{{ node.name }} \
+          --vcpus {{ master_vcpu if node.role == 'master' else worker_vcpu }} \
+          --memory {{ master_ram_mib if node.role == 'master' else worker_ram_mib }} \
+          --cpu {{ 'host-passthrough' if node.role == 'master' else worker_cpu_mode }} \
+          --disk path={{ _poolpath }}/{{ cluster_name }}-{{ node.name }}.qcow2,size={{ master_disk_gib if node.role == 'master' else worker_disk_gib }},format=qcow2,bus=virtio \
+          {% if node.role == 'master' %}--disk path={{ node.osd }},bus=virtio{% else %}--disk path={{ _poolpath }}/{{ cluster_name }}-{{ node.name }}-data.qcow2,size={{ worker_data_disk_gib }},format=qcow2,bus=virtio{% endif %} \
           --disk path={{ iso_path }},device=cdrom \
-          --network type=direct,source={{ machine_nic }},source_mode=bridge,model=virtio \
-          {{ _storage_net }} \
+          --network type=direct,source={{ machine_nic }},source_mode=bridge,model=virtio,mac={{ node.mmac }} \
+          --network type=bridge,source={{ storage_bridge }},virtualport_type=openvswitch,model=virtio,mac={{ node.smac }} \
           --boot hd,cdrom --os-variant rhel9.4 --graphics vnc --noautoconsole
       args:
         executable: /bin/bash
-      loop: "{{ range(masters_here | int) | list }}"
-      when:
-        - (masters_here | int) > 0
-        - (cluster_name ~ '-master-' ~ item) not in (_doms.stdout_lines | map('trim') | list)
-      register: _mk_m
-      changed_when: _mk_m.rc == 0
-
-    # ── workers(cnv-compute host,嵌套 CNV)──
-    - name: virt-install worker VM(host-passthrough + LVMS 数据盘)
-      ansible.builtin.shell: |
-        virt-install --connect qemu:///system --name {{ cluster_name }}-worker-{{ item }} \
-          --vcpus {{ worker_vcpu }} --memory {{ worker_ram_mib }} --cpu {{ worker_cpu_mode }} \
-          --disk path={{ _poolpath }}/{{ cluster_name }}-worker-{{ item }}.qcow2,size={{ worker_disk_gib }},format=qcow2,bus=virtio \
-          --disk path={{ _poolpath }}/{{ cluster_name }}-worker-{{ item }}-data.qcow2,size={{ worker_data_disk_gib }},format=qcow2,bus=virtio \
-          --disk path={{ iso_path }},device=cdrom \
-          --network type=direct,source={{ machine_nic }},source_mode=bridge,model=virtio \
-          {{ _storage_net }} \
-          --boot hd,cdrom --os-variant rhel9.4 --graphics vnc --noautoconsole
-      args:
-        executable: /bin/bash
-      loop: "{{ range(workers_here | int) | list }}"
-      when:
-        - (workers_here | int) > 0
-        - (cluster_name ~ '-worker-' ~ item) not in (_doms.stdout_lines | map('trim') | list)
-      register: _mk_w
-      changed_when: _mk_w.rc == 0
+      loop: "{{ nodes | selectattr('host', 'equalto', inventory_hostname) | list }}"
+      loop_control:
+        loop_var: node
+        label: "{{ node.name }} ({{ node.mip }} / {{ node.sip }})"
+      when: (cluster_name ~ '-' ~ node.name) not in (_doms.stdout_lines | map('trim') | list)
+      register: _mk
+      changed_when: _mk.rc == 0
 
     - name: Phase 40 done
       ansible.builtin.debug:
         msg: >-
-          ✓ {{ inventory_hostname }}: {{ masters_here }} master + {{ workers_here }} worker VM 已定义/启动;
-          从 {{ iso_path }} 引导 → 稍等去 Phase 50 看 host 注册
+          ✓ {{ inventory_hostname }}: {{ (nodes | selectattr('host', 'equalto', inventory_hostname) | list) | map(attribute='name') | join(', ') }}
+          已定义/启动(双网卡钉 MAC,静态 IP 由 ISO NMState 下发)→ Phase 50 看注册

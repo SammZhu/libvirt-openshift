@@ -6,6 +6,7 @@
 - ansible.builtin.import_playbook: playbooks/00-preflight.yml
 - ansible.builtin.import_playbook: playbooks/10-network.yml
 - ansible.builtin.import_playbook: playbooks/20-assisted-cluster.yml
+- ansible.builtin.import_playbook: playbooks/25-static-network.yml
 - ansible.builtin.import_playbook: playbooks/30-discovery-iso.yml
 - ansible.builtin.import_playbook: playbooks/40-vms.yml
 - ansible.builtin.import_playbook: playbooks/50-wait-hosts.yml

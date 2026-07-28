@@ -1,0 +1,50 @@
+---
+# Phase 25 — 下发每主机静态网络(NMState)到 infra-env(B 方案:双网卡静态).
+#   eth0 = machine(192.168.1.21x/24,gw+dns=router)  |  eth1 = storage 10G(10.10.0.1x/24,无 gw)
+#   MAC 对应 group_vars 的 nodes 表(virt-install 会钉同样的 MAC)。
+#   PATCH static_network_config 会触发 assisted 重生 discovery ISO → 之后 Phase 30 重下。
+- name: Phase 25 — 静态网络配置(infra-env static_network_config)
+  hosts: local
+  gather_facts: false
+  tasks:
+    - name: Resolve Assisted base URL + auth
+      ansible.builtin.include_tasks: ../tasks/assisted_base.yml
+
+    - name: Load state(infra_env_id)
+      ansible.builtin.include_tasks: ../tasks/load_state.yml
+
+    - name: 断言 infra_env_id 存在(先跑 Phase 20)
+      ansible.builtin.assert:
+        that: infra_env_id is defined
+        fail_msg: "state.yml 无 infra_env_id;先跑 Phase 20。"
+
+    - name: 构造 static_network_config(每节点 NMState + mac_interface_map)
+      ansible.builtin.set_fact:
+        _static_cfg: >-
+          {{ _static_cfg | default([]) + [ {
+               'network_yaml': lookup('template', '../templates/host-nmstate.yaml.j2') | string,
+               'mac_interface_map': [
+                 {'mac_address': item.mmac, 'logical_nic_name': 'eth0'},
+                 {'mac_address': item.smac, 'logical_nic_name': 'eth1'} ] } ] }}
+      loop: "{{ nodes }}"
+      loop_control:
+        loop_var: item
+      vars:
+        node: "{{ item }}"
+
+    - name: PATCH infra-env static_network_config(触发 ISO 重生)
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/infra-envs/{{ infra_env_id }}"
+        method: PATCH
+        headers: "{{ assisted_headers | combine({'Content-Type': 'application/json'}) }}"
+        body_format: json
+        body:
+          static_network_config: "{{ _static_cfg }}"
+        status_code: [200, 201]
+      register: _patch
+
+    - name: Phase 25 done
+      ansible.builtin.debug:
+        msg: >-
+          ✓ 已下发 {{ nodes | length }} 主机静态网络到 infra-env(eth0=machine / eth1=10G storage)。
+          ISO 已重生 → 去 Phase 30 重下,再 Phase 40 重建(双网卡钉 MAC)。
