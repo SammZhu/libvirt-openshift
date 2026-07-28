@@ -43,6 +43,9 @@ attach_storage_nic:   false
 # ★安装盘由人显式决定(非 assisted 自动挑最大盘):指定 OS 盘名。多盘节点(OS+ODF/LVMS)
 #   必须设成 OS 盘,否则 RHCOS 装到数据盘。可在 nodes 里加 idisk 覆盖单节点。
 install_disk_name:    vda
+# ★磁盘 cache:消费级 NVMe(无 PLP)fsync 慢,etcd 要 <10ms → unsafe(qemu 用宿主页缓存满足 fsync)。
+#   企业级带 PLP 的 SSD 可用 none/writeback。lab 用 unsafe(断电丢最近写,可接受)。
+disk_cache:           unsafe
 
 # ── OpenShift 集群网络 / ISO(Phase 20/30 用)──────────────────────────────────
 network_type:            OVNKubernetes

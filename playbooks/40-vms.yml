@@ -36,8 +36,8 @@
           --vcpus {{ master_vcpu if node.role == 'master' else worker_vcpu }} \
           --memory {{ master_ram_mib if node.role == 'master' else worker_ram_mib }} \
           --cpu {{ 'host-passthrough' if node.role == 'master' else worker_cpu_mode }} \
-          --disk path={{ _poolpath }}/{{ cluster_name }}-{{ node.name }}.qcow2,size={{ master_disk_gib if node.role == 'master' else worker_disk_gib }},format=qcow2,bus=virtio \
-          {% if node.role == 'master' %}--disk path={{ node.osd }},bus=virtio{% else %}--disk path={{ _poolpath }}/{{ cluster_name }}-{{ node.name }}-data.qcow2,size={{ worker_data_disk_gib }},format=qcow2,bus=virtio{% endif %} \
+          --disk path={{ _poolpath }}/{{ cluster_name }}-{{ node.name }}.qcow2,size={{ master_disk_gib if node.role == 'master' else worker_disk_gib }},format=qcow2,bus=virtio,cache={{ disk_cache }} \
+          {% if node.role == 'master' %}--disk path={{ node.osd }},bus=virtio,cache={{ disk_cache }}{% else %}--disk path={{ _poolpath }}/{{ cluster_name }}-{{ node.name }}-data.qcow2,size={{ worker_data_disk_gib }},format=qcow2,bus=virtio,cache={{ disk_cache }}{% endif %} \
           --disk path={{ iso_path }},device=cdrom \
           --network type=direct,source={{ machine_nic }},source_mode=bridge,model=virtio,mac={{ node.mmac }} \
           --network type=bridge,source={{ storage_bridge }},virtualport_type=openvswitch,model=virtio,mac={{ node.smac }} \
