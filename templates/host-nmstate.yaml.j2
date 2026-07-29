@@ -1,3 +1,5 @@
+hostname:
+  config: {{ node.name }}          # ★静态网无 DHCP,主机名必须在配置层设(否则节点=localhost,node-valid-hostname 守卫挡住 kubelet→装机死锁)
 interfaces:
   - name: eth0                      # machine network(1G,macvtap→eno),带网关+DNS
     type: ethernet
