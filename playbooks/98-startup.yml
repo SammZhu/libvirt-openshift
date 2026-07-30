@@ -1,0 +1,81 @@
+---
+# Phase 98 — 集群开机 / 关机后恢复(make startup).
+#   ★为什么需要:kubelet/node 证书是 24h 一轮的(永远不会变长期),关机 >~18-24h 必过期
+#     → 开机后节点 NotReady,kubelet 用 bootstrap kubeconfig 重新申请证书 → 生成 CSR。
+#     本 playbook 自动批 CSR 恢复。控制面证书(kube-apiserver/etcd,~1yr)和 admin kubeconfig
+#     (~10yr)不受影响 → 控制面静态 pod 照常起、API 可达、admin 证书能认证批 CSR。
+#   前置:VM 所在物理 host 已开机;output_dir/kubeconfig 在(90-kubeconfig 已取过)。
+#   幂等:VM 已运行则跳过启动;节点已 Ready 则批 CSR 循环立即返回。
+
+- name: Phase 98a — 启动所有节点 VM(每 kvm_host)
+  hosts: kvm_host
+  gather_facts: false
+  become: true
+  vars:
+    _my: "{{ nodes | selectattr('host', 'equalto', inventory_hostname) | list }}"
+  tasks:
+    - name: 查运行中的域
+      ansible.builtin.command: "virsh -c qemu:///system list --state-running --name"
+      changed_when: false
+      register: _run
+      when: _my | length > 0
+
+    - name: virsh start 未运行的节点 VM
+      ansible.builtin.command: "virsh -c qemu:///system start {{ cluster_name }}-{{ item.name }}"
+      loop: "{{ _my }}"
+      loop_control:
+        loop_var: item
+        label: "{{ cluster_name }}-{{ item.name }}"
+      when:
+        - _my | length > 0
+        - (cluster_name ~ '-' ~ item.name) not in (_run.stdout_lines | default([]) | map('trim') | list)
+      register: _st
+      changed_when: _st.rc == 0
+
+    - name: Phase 98a done
+      ansible.builtin.debug:
+        msg: "✓ {{ inventory_hostname }}: {{ _my | map(attribute='name') | join(', ') }} 已启动/已在运行"
+      when: _my | length > 0
+
+- name: Phase 98b — 等 API + 批 CSR + 等节点 Ready
+  hosts: local
+  gather_facts: false
+  vars:
+    _want: "{{ nodes | length }}"
+  tasks:
+    - name: 等 API 起来(控制面静态 pod;证书过期不影响静态 pod 运行)
+      ansible.builtin.uri:
+        url: "https://{{ api_vip }}:6443/readyz"
+        validate_certs: false
+        status_code: [200]
+      register: _api
+      until: _api.status | default(0) == 200
+      retries: 90
+      delay: 20
+
+    - name: 批 CSR 直到所有节点 Ready(关机期证书过期→kubelet 重领→CSR)
+      ansible.builtin.shell: |
+        set -o pipefail
+        export KUBECONFIG={{ output_dir }}/kubeconfig
+        for i in $(seq 1 120); do
+          oc get csr -o name 2>/dev/null | xargs -r oc adm certificate approve >/dev/null 2>&1
+          r=$(oc get nodes --no-headers 2>/dev/null | awk '$2=="Ready"' | wc -l)
+          echo "[$i] Ready $r/{{ _want }}"
+          [ "$r" -ge {{ _want }} ] && exit 0
+          sleep 20
+        done
+        exit 1
+      args:
+        executable: /bin/bash
+      register: _csr
+      changed_when: true
+      failed_when: false
+
+    - name: 最终节点状态
+      ansible.builtin.shell: "export KUBECONFIG={{ output_dir }}/kubeconfig; oc get nodes 2>&1; echo '---'; oc get co --no-headers 2>/dev/null | awk '$3==\"True\"{c++} END{print \"CO Available: \"c\"/34\"}'"
+      changed_when: false
+      register: _final
+
+    - name: Phase 98 done
+      ansible.builtin.debug:
+        msg: "{{ _final.stdout_lines }}"
