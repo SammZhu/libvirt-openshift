@@ -1,7 +1,7 @@
 INV ?= inventory/hosts.yml
 PB  = ansible-playbook -i $(INV)
 
-.PHONY: help preflight network cluster iso vms wait install-ocp kubeconfig install teardown demo lint
+.PHONY: help preflight network cluster iso vms wait install-ocp kubeconfig install add-workers startup teardown demo lint
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/ —/' | sort
@@ -28,12 +28,16 @@ install: network cluster iso vms wait install-ocp kubeconfig  ## 全流程(不�
 add-workers: ## Day2 加 worker(基础集群 installed 后;worker host 需开机)
 	$(PB) playbooks/70-day2-workers.yml
 
+startup:     ## 开机/关机恢复:启动 VM + 批 CSR(证书过期)+ 等节点 Ready
+	$(PB) playbooks/98-startup.yml
+
 teardown:    ## 拆集群:销毁 VM+盘 + 删 assisted cluster + 清 state
 	$(PB) playbooks/99-teardown.yml
 
 demo:        ## 无云 hermetic:全 playbook 语法校验,不碰真主机/真 API/凭据
 	ansible-playbook --syntax-check site.yml
 	ansible-playbook --syntax-check playbooks/70-day2-workers.yml
+	ansible-playbook --syntax-check playbooks/98-startup.yml
 	ansible-playbook --syntax-check playbooks/99-teardown.yml
 	@echo "✓ syntax OK — all phases parse"
 
