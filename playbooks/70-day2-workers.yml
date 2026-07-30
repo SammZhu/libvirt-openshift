@@ -1,0 +1,341 @@
+---
+# Phase 70 — Day2 加 worker(基础控制面 installed 后运行:make add-workers).
+#   为什么单独 Day2:worker 首装会撞 assisted "Waiting for control plane"=1h 硬超时
+#   (见 group_vars control_plane_only 注释)。基础 3-master installed 后,worker 作为 Day2
+#   主机后加:无 bootstrap 耦合超时,单台装、慢就慢。
+#   ★assisted day2 机制:day1 装完后 assisted 自动建一个 **AddHostsCluster**(kind=AddHostsCluster,
+#     status=adding-hosts,同 openshift_cluster_id)及其 infra-env(默认 minimal-iso)。加机必须用
+#     绑 AddHostsCluster 的 infra-env(绑 day1 cluster 会被 409 "original Discovery ISO" 拒)。
+#     且默认 minimal-iso 国内启动拉 rootfs 会卡,故 PATCH 成 full-iso + 补 worker 静态网络。
+#   day2_nodes = nodes 里 role=worker 子集。步骤:
+#     70a(local):定位 AddHostsCluster + 其 infra-env → PATCH full-iso+worker 网络 → 取 ISO URL
+#     70b(kvm_host):下 day2 ISO + virt-install worker VM
+#     70c(local):等注册 → 定 worker 角色/主机名/安装盘 → V2InstallHost → 批 CSR/join
+
+- name: Phase 70a — 定位 AddHostsCluster + infra-env → full-iso + worker 静态网络
+  hosts: local
+  gather_facts: false
+  vars:
+    day2_nodes: "{{ nodes | selectattr('role', 'equalto', 'worker') | list }}"
+  tasks:
+    - name: Resolve Assisted base URL + auth
+      ansible.builtin.include_tasks: ../tasks/assisted_base.yml
+    - name: Load state(cluster_id = day1 cluster)
+      ansible.builtin.include_tasks: ../tasks/load_state.yml
+    - name: 断言前置
+      ansible.builtin.assert:
+        that:
+          - cluster_id is defined
+          - (day2_nodes | length) > 0
+        fail_msg: "state.yml 无 cluster_id,或 nodes 里没有 worker;先装好基础集群。"
+
+    - name: 取 day1 cluster(须 installed)→ openshift_cluster_id
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/clusters/{{ cluster_id }}"
+        headers: "{{ assisted_headers }}"
+      register: _c0
+      failed_when: _c0.json.status != 'installed'
+
+    - name: 读 pull secret / ssh key(create infra-env 兜底用)
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ pull_secret_file }}"
+        - "{{ ssh_pub_key_file }}"
+      register: _sec
+      no_log: true
+    - name: Set secrets(| string 防 jinja2_native 把 JSON eval 成 dict)
+      ansible.builtin.set_fact:
+        _pull_secret: "{{ (_sec.results[0].content | b64decode | trim) | string }}"
+        _ssh_key: "{{ (_sec.results[1].content | b64decode | trim) | string }}"
+      no_log: true
+
+    - name: 构造 worker static_network_config(NMState + mac_interface_map)
+      ansible.builtin.set_fact:
+        _wcfg: >-
+          {{ _wcfg | default([]) + [ {
+               'network_yaml': lookup('template', '../templates/host-nmstate.yaml.j2') | string,
+               'mac_interface_map': [
+                 {'mac_address': item.mmac, 'logical_nic_name': 'eth0'},
+                 {'mac_address': item.smac, 'logical_nic_name': 'eth1'} ] } ] }}
+      loop: "{{ day2_nodes }}"
+      loop_control:
+        loop_var: item
+      vars:
+        node: "{{ item }}"
+
+    # ── 定位 AddHostsCluster(assisted 装完自动建;同 openshift_cluster_id)──
+    - name: 列 clusters 找 AddHostsCluster
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/clusters"
+        headers: "{{ assisted_headers }}"
+      register: _cls
+
+    - name: 记录 AddHostsCluster id(若已存在)
+      ansible.builtin.set_fact:
+        d2_cid: "{{ (_cls.json | selectattr('kind', 'equalto', 'AddHostsCluster') | selectattr('openshift_cluster_id', 'equalto', _c0.json.openshift_cluster_id) | map(attribute='id') | first) }}"
+      when: (_cls.json | selectattr('kind', 'equalto', 'AddHostsCluster') | selectattr('openshift_cluster_id', 'equalto', _c0.json.openshift_cluster_id) | list | length) > 0
+
+    - name: 无 AddHostsCluster 则 import 建一个(day2 集群)
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/clusters/import"
+        method: POST
+        headers: "{{ assisted_headers | combine({'Content-Type': 'application/json'}) }}"
+        body_format: json
+        body:
+          name: "{{ cluster_name }}"
+          openshift_cluster_id: "{{ _c0.json.openshift_cluster_id }}"
+          api_vip_dnsname: "api.{{ cluster_name }}.{{ base_domain }}"
+        status_code: [201]
+      register: _imp
+      when: d2_cid is not defined
+    - name: 记录 import 的 d2_cid
+      ansible.builtin.set_fact:
+        d2_cid: "{{ _imp.json.id }}"
+      when: d2_cid is not defined
+
+    # ── AddHostsCluster 的 infra-env:有则 PATCH full-iso+网络,无则建 ──
+    - name: 查 AddHostsCluster 的 infra-env
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/infra-envs?cluster_id={{ d2_cid }}"
+        headers: "{{ assisted_headers }}"
+      register: _d2ies
+    - name: 记录已有 infra-env id
+      ansible.builtin.set_fact:
+        day2_ie: "{{ _d2ies.json[0].id }}"
+      when: (_d2ies.json | length) > 0
+
+    - name: PATCH 已有 infra-env → full-iso + worker 静态网络(触发 ISO 重生)
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/infra-envs/{{ day2_ie }}"
+        method: PATCH
+        headers: "{{ assisted_headers | combine({'Content-Type': 'application/json'}) }}"
+        body_format: json
+        body:
+          image_type: "{{ image_type }}"
+          additional_ntp_sources: "{{ additional_ntp_sources }}"   # ★自动建的 day2 infra-env 无 NTP → worker NTP 校验失败 insufficient;补上(国内默认 NTP 连不上)
+          ssh_authorized_key: "{{ _ssh_key }}"                     # 自动建的无 ssh key → 补上便于进节点调试
+          static_network_config: "{{ _wcfg }}"
+        status_code: [200, 201]
+      when: day2_ie is defined
+
+    - name: 无 infra-env 则建(绑 AddHostsCluster;full-iso + worker 静态网络)
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/infra-envs"
+        method: POST
+        headers: "{{ assisted_headers | combine({'Content-Type': 'application/json'}) }}"
+        body_format: json
+        body:
+          name: "{{ cluster_name }}-day2"
+          openshift_version: "{{ openshift_version }}"
+          cpu_architecture: "{{ cpu_architecture }}"
+          cluster_id: "{{ d2_cid }}"
+          image_type: "{{ image_type }}"
+          additional_ntp_sources: "{{ additional_ntp_sources }}"
+          static_network_config: "{{ _wcfg }}"
+          pull_secret: "{{ _pull_secret | string }}"
+          ssh_authorized_key: "{{ _ssh_key }}"
+        status_code: [201]
+      register: _d2new
+      no_log: true
+      when: day2_ie is not defined
+    - name: 记录新建 infra-env id
+      ansible.builtin.set_fact:
+        day2_ie: "{{ _d2new.json.id }}"
+      when: day2_ie is not defined
+
+    - name: 取 day2 discovery ISO URL
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/infra-envs/{{ day2_ie }}/downloads/image-url"
+        headers: "{{ assisted_headers }}"
+      register: _isourl
+      no_log: true
+    - name: 缓存 ISO URL + day2 cluster/infra-env
+      ansible.builtin.set_fact:
+        iso_url: "{{ _isourl.json.url | string }}"
+      no_log: true
+
+    - name: Phase 70a done
+      ansible.builtin.debug:
+        msg: "✓ AddHostsCluster={{ d2_cid }} infra-env={{ day2_ie }}(full-iso+worker 网络),ISO 就绪 → 下 ISO + 建 worker VM"
+
+- name: Phase 70b — 下 Day2 ISO + virt-install worker VM(worker 所在 host)
+  hosts: kvm_host
+  gather_facts: false
+  become: true
+  vars:
+    day2_nodes: "{{ nodes | selectattr('role', 'equalto', 'worker') | list }}"
+    _my: "{{ day2_nodes | selectattr('host', 'equalto', inventory_hostname) | list }}"
+  tasks:
+    - name: 查 pool 路径(仅本机有 worker 才做)
+      ansible.builtin.shell: "virsh -c qemu:///system pool-dumpxml {{ vm_pool }} | grep -oP '(?<=<path>)[^<]+'"
+      changed_when: false
+      register: _pp
+      when: _my | length > 0
+    - name: 设 pool/iso 路径(day2 ISO 单独文件名)
+      ansible.builtin.set_fact:
+        _poolpath: "{{ _pp.stdout | trim }}"
+        iso_path: "{{ (_pp.stdout | trim) }}/{{ cluster_name }}-day2.iso"
+      when: _my | length > 0
+    - name: 下载 day2 ISO(force:必重下)
+      ansible.builtin.get_url:
+        url: "{{ hostvars['local'].iso_url }}"
+        dest: "{{ iso_path }}"
+        mode: "0644"
+        force: true
+      no_log: true
+      when: _my | length > 0
+    - name: 刷新 pool
+      ansible.builtin.command: "virsh -c qemu:///system pool-refresh {{ vm_pool }}"
+      changed_when: false
+      when: _my | length > 0
+    - name: 现有域清单
+      ansible.builtin.command: "virsh -c qemu:///system list --all --name"
+      changed_when: false
+      register: _doms
+      when: _my | length > 0
+    - name: virt-install worker VM(双网卡钉 MAC;数据盘给 LVMS/CNV)
+      ansible.builtin.shell: |
+        virt-install --connect qemu:///system --name {{ cluster_name }}-{{ node.name }} \
+          --vcpus {{ worker_vcpu }} --memory {{ worker_ram_mib }} --cpu {{ worker_cpu_mode }} \
+          --disk path={{ _poolpath }}/{{ cluster_name }}-{{ node.name }}.qcow2,size={{ worker_disk_gib }},format=qcow2,bus=virtio,cache={{ disk_cache }} \
+          --disk path={{ _poolpath }}/{{ cluster_name }}-{{ node.name }}-data.qcow2,size={{ worker_data_disk_gib }},format=qcow2,bus=virtio,cache={{ disk_cache }} \
+          --disk path={{ iso_path }},device=cdrom \
+          --network type=direct,source={{ machine_nic }},source_mode=bridge,model=virtio,mac={{ node.mmac }} \
+          --network type=bridge,source={{ storage_bridge }},virtualport_type=openvswitch,model=virtio,mac={{ node.smac }} \
+          --boot hd,cdrom --os-variant rhel9.4 --graphics vnc --noautoconsole
+      args:
+        executable: /bin/bash
+      loop: "{{ _my }}"
+      loop_control:
+        loop_var: node
+        label: "{{ node.name }} ({{ node.mip }})"
+      when:
+        - _my | length > 0
+        - (cluster_name ~ '-' ~ node.name) not in (_doms.stdout_lines | default([]) | map('trim') | list)
+      register: _mk
+      changed_when: _mk.rc == 0
+    - name: Phase 70b done
+      ansible.builtin.debug:
+        msg: "✓ {{ inventory_hostname }}: {{ (_my | map(attribute='name') | join(', ')) | default('(无 worker)') }} 已建/启动 → Phase 70c 看注册"
+      when: _my | length > 0
+
+- name: Phase 70c — 等 day2 host 注册 → 定角色 → install → join
+  hosts: local
+  gather_facts: false
+  vars:
+    day2_nodes: "{{ nodes | selectattr('role', 'equalto', 'worker') | list }}"
+    _wmacs: "{{ day2_nodes | map(attribute='mmac') | list }}"
+  tasks:
+    - name: Resolve Assisted base URL + auth
+      ansible.builtin.include_tasks: ../tasks/assisted_base.yml
+
+    - name: 等 worker 注册({{ day2_nodes | length }} 台 day2 host)
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/infra-envs/{{ day2_ie }}/hosts"
+        headers: "{{ assisted_headers }}"
+      register: _h
+      until: >-
+        (_h.json | selectattr('inventory', 'defined')
+          | selectattr('inventory', 'ne', '')
+          | map(attribute='inventory') | map('from_json')
+          | map(attribute='interfaces') | map('map', attribute='mac_address') | map('flatten')
+          | map('intersect', _wmacs) | select | list | length) >= (day2_nodes | length)
+      retries: 40
+      delay: 20
+
+    - name: 匹配 worker host ↔ node(+ 选安装盘)
+      ansible.builtin.set_fact:
+        _pairs: "{{ _pairs | default([]) + [{'hid': item.id, 'role': 'worker', 'name': _node.name, 'disk': _disk}] }}"
+      loop: "{{ _h.json }}"
+      loop_control:
+        loop_var: item
+        label: "{{ item.id[0:8] }}"
+      vars:
+        _inv: "{{ item.inventory | from_json }}"
+        _macs: "{{ _inv.interfaces | map(attribute='mac_address') | list }}"
+        _node: "{{ day2_nodes | selectattr('mmac', 'in', _macs) | first }}"
+        _dname: "{{ _node.idisk | default(install_disk_name) }}"
+        _disk: "{{ _inv.disks | selectattr('name', 'equalto', _dname) | map(attribute='id') | first }}"
+      when:
+        - (item.inventory | default('')) | length > 0
+        - (item.inventory | from_json).interfaces | map(attribute='mac_address') | list | intersect(_wmacs) | length > 0
+
+    - name: 设 worker 角色 + 主机名 + 安装盘(PATCH host)
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/infra-envs/{{ day2_ie }}/hosts/{{ item.hid }}"
+        method: PATCH
+        headers: "{{ assisted_headers | combine({'Content-Type': 'application/json'}) }}"
+        body_format: json
+        body:
+          host_role: "{{ item.role }}"
+          host_name: "{{ item.name }}"
+          disks_selected_config:
+            - id: "{{ item.disk }}"
+              role: install
+        status_code: [201]
+      loop: "{{ _pairs }}"
+      loop_control:
+        label: "{{ item.name }} => worker (install→{{ item.disk | basename }})"
+
+    - name: 等每台 worker 校验通过(status=known)
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/infra-envs/{{ day2_ie }}/hosts/{{ item.hid }}"
+        headers: "{{ assisted_headers }}"
+      register: _hk
+      loop: "{{ _pairs }}"
+      loop_control:
+        loop_var: item
+        label: "{{ item.name }}"
+      until: _hk.json.status in ['known', 'installing', 'installing-in-progress', 'installed', 'added-to-existing-cluster']
+      retries: 30
+      delay: 20
+
+    - name: 逐台触发 Day2 安装(V2InstallHost)
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/infra-envs/{{ day2_ie }}/hosts/{{ item.hid }}/actions/install"
+        method: POST
+        headers: "{{ assisted_headers }}"
+        status_code: [200, 201, 202]
+      loop: "{{ _pairs }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: 批 CSR 直到 worker 节点 Ready(day2 join;kubelet-serving CSR 需批准)
+      ansible.builtin.shell: |
+        set -o pipefail
+        export KUBECONFIG={{ output_dir }}/kubeconfig
+        want={{ (nodes | rejectattr('role','equalto','worker') | list | length) + (day2_nodes | length) }}
+        for i in $(seq 1 90); do
+          oc get csr -o name 2>/dev/null | xargs -r oc adm certificate approve >/dev/null 2>&1
+          r=$(oc get nodes --no-headers 2>/dev/null | awk '$2=="Ready"' | wc -l)
+          echo "[$i] Ready 节点 $r/$want"
+          [ "$r" -ge "$want" ] && exit 0
+          sleep 20
+        done
+        exit 0
+      args:
+        executable: /bin/bash
+      register: _csr
+      changed_when: true
+
+    - name: 刷新 assisted token(CSR 循环等了十几分钟,SaaS token ~15min 会过期)
+      ansible.builtin.include_tasks: ../tasks/assisted_base.yml
+
+    - name: 确认每台 worker assisted 侧装完(status=installed / added-to-existing-cluster)
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/infra-envs/{{ day2_ie }}/hosts/{{ item.hid }}"
+        headers: "{{ assisted_headers }}"
+      register: _hi
+      loop: "{{ _pairs }}"
+      loop_control:
+        loop_var: item
+        label: "{{ item.name }} => {{ _hi.json.status | default('?') }}"
+      until: (_hi.json.status | default('')) in ['installed', 'added-to-existing-cluster']
+      retries: 20
+      delay: 30
+      failed_when: false        # 节点 Ready(上一步 CSR 循环已确认)才是硬指标;assisted 状态仅参考
+
+    - name: Phase 70c done
+      ansible.builtin.debug:
+        msg: "✓ {{ day2_nodes | length }} worker 已 day2 install 并 join。oc get nodes 应见 {{ (nodes | rejectattr('role','equalto','worker') | list | length) + (day2_nodes | length) }} 台。"
