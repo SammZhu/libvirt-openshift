@@ -44,7 +44,7 @@
           --boot hd,cdrom --os-variant rhel9.4 --graphics vnc --noautoconsole
       args:
         executable: /bin/bash
-      loop: "{{ nodes | selectattr('host', 'equalto', inventory_hostname) | list }}"
+      loop: "{{ install_nodes | selectattr('host', 'equalto', inventory_hostname) | list }}"
       loop_control:
         loop_var: node
         label: "{{ node.name }} ({{ node.mip }} / {{ node.sip }})"
@@ -55,5 +55,5 @@
     - name: Phase 40 done
       ansible.builtin.debug:
         msg: >-
-          ✓ {{ inventory_hostname }}: {{ (nodes | selectattr('host', 'equalto', inventory_hostname) | list) | map(attribute='name') | join(', ') }}
+          ✓ {{ inventory_hostname }}: {{ (install_nodes | selectattr('host', 'equalto', inventory_hostname) | list) | map(attribute='name') | join(', ') }}
           已定义/启动(双网卡钉 MAC,静态 IP 由 ISO NMState 下发)→ Phase 50 看注册

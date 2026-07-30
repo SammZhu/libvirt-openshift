@@ -13,6 +13,13 @@ cpu_architecture:    x86_64
 control_plane_count: 3
 masters_schedulable: true              # compact:master 可调度 + 兼 ODF 存储节点
 worker_count:        2                 # cnv-compute host 上的 CNV worker 数
+# ★首装只装控制面(3 可调度 master),worker 走 Day2 加(playbooks/70-day2-workers.yml)。
+#   原因:assisted 里 worker 有条 "Waiting for control plane" = 1h0m0s 硬超时;慢网(如国内
+#   ~44Mbps)拉 34 个 operator 镜像 >1h → worker 判超时 → 整 cluster failed(masters 无此闸能装完)。
+#   首装不带 worker 就没这条闸,干净到 installed;worker 作为 Day2 主机后加(无 bootstrap 耦合超时)。
+control_plane_only:  true
+# 本次首装实际纳入的节点:control_plane_only=true → 仅 master;否则全量。Day2 phase 另取 worker 子集。
+install_nodes: "{{ (nodes | rejectattr('role', 'equalto', 'worker') | list) if (control_plane_only | default(false) | bool) else nodes }}"
 
 # ── Install method × connectivity(两轴)───────────────────────────────────────
 installation_method: assisted          # assisted | agent-based(ABI, 规划中)

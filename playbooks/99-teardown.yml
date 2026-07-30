@@ -1,0 +1,83 @@
+---
+# Phase 99 — 拆除集群(显式运行:make teardown,不在 site.yml 里).
+#   1) 每 kvm_host:destroy + undefine 本机所有节点 VM,删其 qcow2(OS/data)盘;
+#      ★保留 master 的 OSD 裸盘直通(/dev/nvmeXn1)与 discovery ISO(下次 Phase 30 覆盖)。
+#   2) local:删 assisted infra-env + cluster,清空 state.yml → 下次 Phase 20 建全新。
+#   注:拆的是全量 `nodes`(含 Day2 worker),把环境彻底还原。
+- name: Phase 99a — 销毁节点 VM(每 kvm_host)
+  hosts: kvm_host
+  gather_facts: false
+  become: true
+  tasks:
+    - name: 查 pool 路径
+      ansible.builtin.shell: "virsh -c qemu:///system pool-dumpxml {{ vm_pool }} | grep -oP '(?<=<path>)[^<]+'"
+      changed_when: false
+      register: _pp
+
+    - name: destroy 运行中的域(不存在/已关也不报错)
+      ansible.builtin.command: "virsh -c qemu:///system destroy {{ cluster_name }}-{{ item.name }}"
+      loop: "{{ nodes | selectattr('host', 'equalto', inventory_hostname) | list }}"
+      loop_control:
+        loop_var: item
+        label: "{{ cluster_name }}-{{ item.name }}"
+      register: _d
+      failed_when: false
+      changed_when: _d.rc == 0
+
+    - name: undefine 域(保留磁盘,单独删 qcow2)
+      ansible.builtin.command: "virsh -c qemu:///system undefine {{ cluster_name }}-{{ item.name }}"
+      loop: "{{ nodes | selectattr('host', 'equalto', inventory_hostname) | list }}"
+      loop_control:
+        loop_var: item
+        label: "{{ cluster_name }}-{{ item.name }}"
+      register: _u
+      failed_when: false
+      changed_when: _u.rc == 0
+
+    - name: 删本集群 qcow2 盘(OS/data;不碰 osd 裸盘与 *.iso)
+      ansible.builtin.shell: "rm -f {{ _pp.stdout | trim }}/{{ cluster_name }}-*.qcow2"
+      register: _rm
+      changed_when: true
+
+    - name: Phase 99a done
+      ansible.builtin.debug:
+        msg: >-
+          ✓ {{ inventory_hostname }}: 已拆
+          {{ (nodes | selectattr('host', 'equalto', inventory_hostname) | list) | map(attribute='name') | join(', ') }}
+          (qcow2 已删,osd 裸盘/ISO 保留)
+
+- name: Phase 99b — 删 assisted cluster + 清 state
+  hosts: local
+  gather_facts: false
+  tasks:
+    - name: Resolve Assisted base URL + auth
+      ansible.builtin.include_tasks: ../tasks/assisted_base.yml
+    - name: Load state
+      ansible.builtin.include_tasks: ../tasks/load_state.yml
+
+    - name: 删 infra-env(若有)
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/infra-envs/{{ infra_env_id }}"
+        method: DELETE
+        headers: "{{ assisted_headers }}"
+        status_code: [200, 204, 404]
+      when: infra_env_id is defined
+      failed_when: false
+
+    - name: 删 cluster(若有)
+      ansible.builtin.uri:
+        url: "{{ assisted_base_url }}/clusters/{{ cluster_id }}"
+        method: DELETE
+        headers: "{{ assisted_headers }}"
+        status_code: [200, 204, 404]
+      when: cluster_id is defined
+      failed_when: false
+
+    - name: 清空 state.yml(下次 Phase 20 建全新 cluster/infra-env)
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../state.yml"
+        state: absent
+
+    - name: Phase 99 done
+      ansible.builtin.debug:
+        msg: "✓ assisted cluster/infra-env 已删,state.yml 已清 → 可从 Phase 20 重新开始"
