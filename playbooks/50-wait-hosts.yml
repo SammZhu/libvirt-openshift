@@ -11,12 +11,12 @@
     - name: Load state
       ansible.builtin.include_tasks: ../tasks/load_state.yml
 
-    - name: 等所有节点注册({{ nodes | length }} 台)
+    - name: 等所有节点注册({{ install_nodes | length }} 台)
       ansible.builtin.uri:
         url: "{{ assisted_base_url }}/clusters/{{ cluster_id }}/hosts"
         headers: "{{ assisted_headers }}"
       register: _h
-      until: (_h.json | length) >= (nodes | length)
+      until: (_h.json | length) >= (install_nodes | length)
       retries: 30
       delay: 20
 
@@ -40,7 +40,7 @@
       vars:
         _inv: "{{ item.json.inventory | from_json }}"
         _macs: "{{ _inv.interfaces | map(attribute='mac_address') | list }}"
-        _node: "{{ nodes | selectattr('mmac', 'in', _macs) | first }}"
+        _node: "{{ install_nodes | selectattr('mmac', 'in', _macs) | first }}"
         # ★安装盘由配置显式决定(install_disk_name,或 node.idisk 覆盖);不用 assisted 自动选(会挑最大盘)
         _dname: "{{ _node.idisk | default(install_disk_name) }}"
         _vda: "{{ _inv.disks | selectattr('name', 'equalto', _dname) | map(attribute='id') | first }}"

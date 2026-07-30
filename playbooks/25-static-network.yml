@@ -26,7 +26,7 @@
                'mac_interface_map': [
                  {'mac_address': item.mmac, 'logical_nic_name': 'eth0'},
                  {'mac_address': item.smac, 'logical_nic_name': 'eth1'} ] } ] }}
-      loop: "{{ nodes }}"
+      loop: "{{ install_nodes }}"
       loop_control:
         loop_var: item
       vars:
@@ -46,5 +46,5 @@
     - name: Phase 25 done
       ansible.builtin.debug:
         msg: >-
-          ✓ 已下发 {{ nodes | length }} 主机静态网络到 infra-env(eth0=machine / eth1=10G storage)。
+          ✓ 已下发 {{ install_nodes | length }} 主机静态网络到 infra-env(eth0=machine / eth1=10G storage)。
           ISO 已重生 → 去 Phase 30 重下,再 Phase 40 重建(双网卡钉 MAC)。
