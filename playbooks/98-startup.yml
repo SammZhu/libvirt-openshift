@@ -93,6 +93,12 @@
       failed_when: false
       register: _ovndiag
 
+    - name: 证书状态 + 安全关机窗口(每次开机报一次,心里有数)
+      ansible.builtin.shell: "KUBECONFIG={{ output_dir }}/kubeconfig bash {{ playbook_dir }}/../tools/cert-status.sh 2>&1 | grep -E '安全关机窗口|⚠️' | head -4"
+      changed_when: false
+      failed_when: false
+      register: _certwin
+
     - name: Phase 98 done
       ansible.builtin.debug:
-        msg: "{{ _final.stdout_lines + ['--- OVN 诊断钩子 ---'] + (_ovndiag.stdout_lines | default([])) }}"
+        msg: "{{ _final.stdout_lines + ['--- OVN 诊断钩子 ---'] + (_ovndiag.stdout_lines | default([])) + ['--- 证书窗口 ---'] + (_certwin.stdout_lines | default([])) }}"
