@@ -1,0 +1,138 @@
+---
+# Phase 72 — Day2 ODF(OpenShift Data Foundation / Ceph,RWX 共享存储).
+#   基础 5 节点 + 存储/CNV(71)后:make odf。给 CNV live migration 提供 RWX;对象/块/文件全能。
+#   ① Local Storage Operator:把 master 的 OSD 裸盘(vdb ~953G)发现成本地 PV(StorageClass localblock)。
+#   ② ODF operator(openshift-storage,与 LVMS 共存)+ StorageCluster:3 OSD(每 master 一块)replica 3。
+#   前置:3 master 各有一块 OSD 裸盘(vdb,minSize 900G 过滤);redhat-operators catalog READY。
+#   慢网提示:Ceph 镜像多,StorageCluster 到 Ready 在 ~44Mbps 下可能 20-40min。
+- name: Phase 72 — Day2 ODF(Ceph)
+  hosts: local
+  gather_facts: false
+  vars:
+    O: "oc --kubeconfig={{ output_dir }}/kubeconfig"
+    ver2: "{{ openshift_version.split('.')[0:2] | join('.') }}"
+  tasks:
+    # ── ① Local Storage Operator + LocalVolumeSet ──
+    - name: LSO — namespace/OperatorGroup/Subscription
+      ansible.builtin.shell: |
+        {{ O }} apply -f - <<'EOF'
+        apiVersion: v1
+        kind: Namespace
+        metadata: {name: openshift-local-storage}
+        ---
+        apiVersion: operators.coreos.com/v1
+        kind: OperatorGroup
+        metadata: {name: local-operator-group, namespace: openshift-local-storage}
+        spec: {targetNamespaces: [openshift-local-storage]}
+        ---
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata: {name: local-storage-operator, namespace: openshift-local-storage}
+        spec: {channel: stable, name: local-storage-operator, source: redhat-operators, sourceNamespace: openshift-marketplace, installPlanApproval: Automatic}
+        EOF
+      changed_when: true
+
+    - name: LSO — 等 CSV Succeeded
+      ansible.builtin.shell: "{{ O }} -n openshift-local-storage get csv -o jsonpath='{range .items[*]}{.metadata.name}={.status.phase} {end}' 2>/dev/null | tr ' ' '\n' | grep local-storage"
+      register: _lso
+      until: "'Succeeded' in _lso.stdout"
+      retries: 20
+      delay: 20
+      changed_when: false
+
+    - name: LSO — LocalVolumeSet(master OSD 裸盘 vdb → localblock;minSize 900G 排除 OS 盘)
+      ansible.builtin.shell: |
+        {{ O }} apply -f - <<'EOF'
+        apiVersion: local.storage.openshift.io/v1alpha1
+        kind: LocalVolumeSet
+        metadata: {name: local-block, namespace: openshift-local-storage}
+        spec:
+          nodeSelector:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - {key: node-role.kubernetes.io/master, operator: Exists}
+          storageClassName: localblock
+          volumeMode: Block
+          deviceInclusionSpec: {deviceTypes: [disk], minSize: 900Gi, maxSize: 1200Gi}
+        EOF
+      changed_when: true
+
+    - name: LSO — 等 3 个 localblock PV 就绪
+      ansible.builtin.shell: "{{ O }} get pv --no-headers 2>/dev/null | grep -c localblock"
+      register: _pv
+      until: "_pv.stdout | int >= 3"
+      retries: 20
+      delay: 20
+      changed_when: false
+
+    # ── ② ODF operator + StorageCluster ──
+    - name: ODF — Subscription(openshift-storage;命名空间/OG 已由 71 或本处建)
+      ansible.builtin.shell: |
+        {{ O }} get ns openshift-storage >/dev/null 2>&1 || {{ O }} create ns openshift-storage
+        {{ O }} -n openshift-storage get operatorgroup >/dev/null 2>&1 | grep -q . || {{ O }} apply -f - <<'EOF'
+        apiVersion: operators.coreos.com/v1
+        kind: OperatorGroup
+        metadata: {name: openshift-storage-og, namespace: openshift-storage}
+        spec: {targetNamespaces: [openshift-storage]}
+        EOF
+        {{ O }} apply -f - <<EOF
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata: {name: odf-operator, namespace: openshift-storage}
+        spec: {channel: stable-{{ ver2 }}, name: odf-operator, source: redhat-operators, sourceNamespace: openshift-marketplace, installPlanApproval: Automatic}
+        EOF
+      changed_when: true
+
+    - name: ODF — 等 ocs/rook operator CSV Succeeded(慢网可能十几分钟)
+      ansible.builtin.shell: "{{ O }} -n openshift-storage get csv -o jsonpath='{range .items[*]}{.metadata.name}={.status.phase} {end}' 2>/dev/null | tr ' ' '\n' | grep -E 'ocs-operator|rook-ceph-operator' | grep Succeeded | wc -l"
+      register: _odfcsv
+      until: "_odfcsv.stdout | int >= 2"
+      retries: 40
+      delay: 20
+      changed_when: false
+
+    - name: ODF — 给有 OSD 盘的 master 打存储标签(manageNodes:false 必须手动,否则 mon/osd/provider 无处调度 Pending)
+      ansible.builtin.shell: >
+        {{ O }} label node -l node-role.kubernetes.io/master
+        cluster.ocs.openshift.io/openshift-storage="" --overwrite
+      changed_when: true
+
+    - name: ODF — StorageCluster(3 OSD replica 3,localblock)
+      ansible.builtin.shell: |
+        {{ O }} apply -f - <<'EOF'
+        apiVersion: ocs.openshift.io/v1
+        kind: StorageCluster
+        metadata: {name: ocs-storagecluster, namespace: openshift-storage}
+        spec:
+          monDataDirHostPath: /var/lib/rook
+          manageNodes: false
+          resourceProfile: lean
+          # ★资源受限(master 8c/24G 已跑控制面+LVMS+CNV):关掉 MCG/noobaa(对象存储,内存大户,
+          #   否则 noobaa-db 挤不下 → StorageCluster 卡 Progressing)。CNV 只需块(ceph-rbd)+文件(cephfs RWX)。
+          multiCloudGateway:
+            reconcileStrategy: ignore
+          storageDeviceSets:
+          - name: ocs-deviceset-localblock
+            count: 1
+            replica: 3
+            portable: false
+            dataPVCTemplate:
+              spec:
+                accessModes: [ReadWriteOnce]
+                storageClassName: localblock
+                volumeMode: Block
+                resources: {requests: {storage: "953Gi"}}
+        EOF
+      changed_when: true
+
+    - name: ODF — 等 StorageCluster Ready(Ceph 部署,慢网 20-40min)
+      ansible.builtin.shell: "{{ O }} -n openshift-storage get storagecluster ocs-storagecluster -o jsonpath='{.status.phase}' 2>/dev/null"
+      register: _sc
+      until: "_sc.stdout == 'Ready'"
+      retries: 60
+      delay: 40
+      changed_when: false
+
+    - name: Phase 72 done
+      ansible.builtin.debug:
+        msg: "✓ ODF Ready — StorageClass ocs-storagecluster-cephfs(RWX)/ -ceph-rbd(RWO块)/ -ceph-rgw(对象)。CNV live migration 用 cephfs(RWX)。"
