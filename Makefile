@@ -1,7 +1,7 @@
 INV ?= inventory/hosts.yml
 PB  = ansible-playbook -i $(INV)
 
-.PHONY: help preflight network cluster iso vms wait install-ocp kubeconfig install add-workers startup diag-ovn teardown demo lint
+.PHONY: help preflight network cluster iso vms wait install-ocp kubeconfig install add-workers startup diag-ovn cert-status rotate-cp-certs teardown demo lint
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/ —/' | sort
@@ -33,6 +33,12 @@ startup:     ## 开机/关机恢复:启动 VM + 批 CSR(证书过期)+ 等节点
 
 diag-ovn:    ## 抓 OVN pod→service 不通(service-ca ENETUNREACH)铁证
 	bash tools/diag-ovn-pod2service.sh
+
+cert-status: ## 报告证书到期 + 算"安全关机窗口"(brick 前多少天)
+	bash tools/cert-status.sh
+
+rotate-cp-certs: ## 强制轮转 kube-apiserver serving 证书,重置安全关机窗口(会滚动重启控制面)
+	bash tools/rotate-cp-certs.sh
 
 teardown:    ## 拆集群:销毁 VM+盘 + 删 assisted cluster + 清 state
 	$(PB) playbooks/99-teardown.yml
