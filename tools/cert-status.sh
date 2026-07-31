@@ -13,6 +13,9 @@ set -uo pipefail
 KC=${KUBECONFIG:-$HOME/openshift-install/nest/kubeconfig}
 O="oc --kubeconfig=$KC --request-timeout=20s"
 NOW=$(date -u +%s)
+# 缓存最早控制面证书到期日:每次成功读到 live 证书就刷新它。集群关机时晨报读它、按今天本地
+# 重算剩余天数(到期日在关机期间不变)。故只要开机跑过一次(如 make startup 末尾)就自愈重建。
+CACHE="${OCP_CERT_CACHE:-$HOME/.cache/ocp-cert-expiry}"
 
 ALL=$($O get secrets -A -o json 2>/dev/null | jq -r '.items[]|select(.metadata.annotations["auth.openshift.io/certificate-not-after"]!=null)|"\(.metadata.annotations["auth.openshift.io/certificate-not-after"]) \(.metadata.namespace)/\(.metadata.name)"' | sort)
 [ -z "$ALL" ] && { echo "拿不到证书信息(集群可用? KUBECONFIG=$KC)"; exit 1; }
@@ -33,6 +36,8 @@ if [ -n "$BRICKLINE" ]; then
   BWHEN=$(echo "$BRICKLINE" | awk '{print $2}')
   BNAME=$(echo "$BRICKLINE" | awk '{print $3}')
   DAYS=$(( (BTS - NOW) / 86400 ))
+  # 刷新缓存(供晨报在集群关机时离线重算;开机跑一次即自愈重建)
+  mkdir -p "$(dirname "$CACHE")" 2>/dev/null && printf '%s\n' "$BWHEN" > "$CACHE" 2>/dev/null
   echo ""
   echo "★ 安全关机窗口 ≈ ${DAYS} 天(最早控制面证书 ${BNAME} 到期 ${BWHEN})"
   echo "  · 早于该日开机 → 干净恢复(24h 证书 make startup 批 CSR 自愈)"
