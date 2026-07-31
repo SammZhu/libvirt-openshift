@@ -1,0 +1,136 @@
+---
+# Phase 71 — Day2 存储(LVMS)+ CNV(OpenShift Virtualization).
+#   基础 5 节点集群就绪后:make storage-cnv。
+#   ① LVMS:worker 本地存储(vdb 数据盘)→ 默认 StorageClass lvms-vg1(topolvm,RWO)。
+#      nodeSelector 精确落纯 worker(worker Exists + control-plane DoesNotExist),避开 master 的 OSD 盘。
+#   ② CNV:kubevirt-hyperconverged → HyperConverged 部署完整虚拟化栈(worker 嵌套虚拟化)。
+#   (ODF/Ceph 见 72-day2-odf.yml;CNV 做 live migration 需 RWX,由 ODF 提供。)
+#   前置:5 节点 Ready;worker 有 vdb 数据盘;worker 嵌套虚拟化开;redhat-operators catalog READY。
+#   慢网提示:CNV 镜像多,HyperConverged 到 Available 在 ~44Mbps 下可能 15-20min。
+- name: Phase 71 — Day2 LVMS + CNV
+  hosts: local
+  gather_facts: false
+  vars:
+    O: "oc --kubeconfig={{ output_dir }}/kubeconfig"
+  tasks:
+    # ── ① LVMS ──
+    - name: LVMS — namespace/OperatorGroup/Subscription
+      ansible.builtin.shell: |
+        {{ O }} apply -f - <<'EOF'
+        apiVersion: v1
+        kind: Namespace
+        metadata: {name: openshift-storage, labels: {openshift.io/cluster-monitoring: "true"}}
+        ---
+        apiVersion: operators.coreos.com/v1
+        kind: OperatorGroup
+        metadata: {name: openshift-storage-og, namespace: openshift-storage}
+        spec: {targetNamespaces: [openshift-storage]}
+        ---
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata: {name: lvms-operator, namespace: openshift-storage}
+        spec:
+          channel: stable-{{ openshift_version.split('.')[0:2] | join('.') }}
+          name: lvms-operator
+          source: redhat-operators
+          sourceNamespace: openshift-marketplace
+          installPlanApproval: Automatic
+        EOF
+      changed_when: true
+
+    - name: LVMS — 等 operator CSV Succeeded
+      ansible.builtin.shell: "{{ O }} -n openshift-storage get csv -o jsonpath='{range .items[*]}{.metadata.name}={.status.phase} {end}' 2>/dev/null | tr ' ' '\n' | grep lvms"
+      register: _lvcsv
+      until: "'Succeeded' in _lvcsv.stdout"
+      retries: 30
+      delay: 20
+      changed_when: false
+
+    - name: LVMS — LVMCluster(worker vdb;避开 master OSD)
+      ansible.builtin.shell: |
+        {{ O }} apply -f - <<'EOF'
+        apiVersion: lvm.topolvm.io/v1alpha1
+        kind: LVMCluster
+        metadata: {name: lvmcluster, namespace: openshift-storage}
+        spec:
+          storage:
+            deviceClasses:
+            - name: vg1
+              default: true
+              fstype: xfs
+              deviceSelector: {paths: [/dev/vdb]}
+              thinPoolConfig: {name: thin-pool-1, sizePercent: 90, overprovisionRatio: 10}
+              nodeSelector:
+                nodeSelectorTerms:
+                - matchExpressions:
+                  - {key: node-role.kubernetes.io/worker, operator: Exists}
+                  - {key: node-role.kubernetes.io/control-plane, operator: DoesNotExist}
+        EOF
+      changed_when: true
+
+    - name: LVMS — 等 LVMCluster Ready
+      ansible.builtin.shell: "{{ O }} -n openshift-storage get lvmcluster lvmcluster -o jsonpath='{.status.state}' 2>/dev/null"
+      register: _lvst
+      until: "_lvst.stdout == 'Ready'"
+      retries: 30
+      delay: 20
+      changed_when: false
+
+    - name: LVMS done
+      ansible.builtin.debug:
+        msg: "✓ LVMS Ready — 默认 StorageClass lvms-vg1(topolvm,worker 本地 RWO)"
+
+    # ── ② CNV ──
+    - name: CNV — namespace/OperatorGroup/Subscription
+      ansible.builtin.shell: |
+        {{ O }} apply -f - <<'EOF'
+        apiVersion: v1
+        kind: Namespace
+        metadata: {name: openshift-cnv}
+        ---
+        apiVersion: operators.coreos.com/v1
+        kind: OperatorGroup
+        metadata: {name: kubevirt-hyperconverged-group, namespace: openshift-cnv}
+        spec: {targetNamespaces: [openshift-cnv]}
+        ---
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata: {name: hco-operatorhub, namespace: openshift-cnv}
+        spec:
+          source: redhat-operators
+          sourceNamespace: openshift-marketplace
+          name: kubevirt-hyperconverged
+          channel: stable
+          installPlanApproval: Automatic
+        EOF
+      changed_when: true
+
+    - name: CNV — 等 operator CSV Succeeded(慢网可能十几分钟)
+      ansible.builtin.shell: "{{ O }} -n openshift-cnv get csv -o jsonpath='{range .items[*]}{.metadata.name}={.status.phase} {end}' 2>/dev/null | tr ' ' '\n' | grep kubevirt-hyperconverged-operator"
+      register: _cnvcsv
+      until: "'Succeeded' in _cnvcsv.stdout"
+      retries: 45
+      delay: 20
+      changed_when: false
+
+    - name: CNV — HyperConverged(部署虚拟化栈)
+      ansible.builtin.shell: |
+        {{ O }} apply -f - <<'EOF'
+        apiVersion: hco.kubevirt.io/v1beta1
+        kind: HyperConverged
+        metadata: {name: kubevirt-hyperconverged, namespace: openshift-cnv}
+        spec: {}
+        EOF
+      changed_when: true
+
+    - name: CNV — 等 HyperConverged Available(拉栈镜像,慢网 15-20min)
+      ansible.builtin.shell: "{{ O }} -n openshift-cnv get hyperconverged kubevirt-hyperconverged -o jsonpath='{.status.conditions[?(@.type==\"Available\")].status}' 2>/dev/null"
+      register: _hco
+      until: "_hco.stdout == 'True'"
+      retries: 60
+      delay: 30
+      changed_when: false
+
+    - name: Phase 71 done
+      ansible.builtin.debug:
+        msg: "✓ LVMS(StorageClass lvms-vg1)+ CNV(OpenShift Virtualization)就绪。可建 VM;live migration 需 RWX(装 ODF,见 72)。"
