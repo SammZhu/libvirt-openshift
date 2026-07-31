@@ -76,6 +76,23 @@
       changed_when: false
       register: _final
 
+    - name: (诊断钩子)service-ca 若未 Running,自动抓 OVN pod→service 铁证
+      # skill: ovn-pod2service-transient-serviceca-wedge —— 症状一现就抓 netns 路由+CNI 日志,
+      # 把"间歇 transient 疑似竞态"升级成实锤。best-effort,不影响开机成败。
+      ansible.builtin.shell: |
+        export KUBECONFIG={{ output_dir }}/kubeconfig
+        if oc -n openshift-service-ca get pods -l app=service-ca --no-headers 2>/dev/null | grep -qE '1/1 +Running'; then
+          echo "service-ca Running ✓ 无需抓证"
+        else
+          echo "★ service-ca 未 Running → 抓 OVN pod→service 铁证:"
+          bash {{ playbook_dir }}/../tools/diag-ovn-pod2service.sh 2>&1 | tail -6
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+      register: _ovndiag
+
     - name: Phase 98 done
       ansible.builtin.debug:
-        msg: "{{ _final.stdout_lines }}"
+        msg: "{{ _final.stdout_lines + ['--- OVN 诊断钩子 ---'] + (_ovndiag.stdout_lines | default([])) }}"

@@ -1,7 +1,7 @@
 INV ?= inventory/hosts.yml
 PB  = ansible-playbook -i $(INV)
 
-.PHONY: help preflight network cluster iso vms wait install-ocp kubeconfig install add-workers startup teardown demo lint
+.PHONY: help preflight network cluster iso vms wait install-ocp kubeconfig install add-workers startup diag-ovn teardown demo lint
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/ —/' | sort
@@ -30,6 +30,9 @@ add-workers: ## Day2 加 worker(基础集群 installed 后;worker host 需开机
 
 startup:     ## 开机/关机恢复:启动 VM + 批 CSR(证书过期)+ 等节点 Ready
 	$(PB) playbooks/98-startup.yml
+
+diag-ovn:    ## 抓 OVN pod→service 不通(service-ca ENETUNREACH)铁证
+	bash tools/diag-ovn-pod2service.sh
 
 teardown:    ## 拆集群:销毁 VM+盘 + 删 assisted cluster + 清 state
 	$(PB) playbooks/99-teardown.yml
