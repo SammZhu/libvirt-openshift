@@ -1,7 +1,7 @@
 INV ?= inventory/hosts.yml
 PB  = ansible-playbook -i $(INV)
 
-.PHONY: help preflight network cluster iso vms wait install-ocp kubeconfig install add-workers storage-cnv odf startup diag-ovn cert-status rotate-cp-certs teardown demo lint
+.PHONY: help preflight network cluster iso vms wait install-ocp kubeconfig install add-workers storage-cnv odf shutdown startup diag-ovn cert-status rotate-cp-certs teardown demo lint
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/ —/' | sort
@@ -34,6 +34,9 @@ storage-cnv: ## Day2 LVMS(worker 本地存储)+ CNV(OpenShift Virtualization)
 odf:         ## Day2 ODF(Ceph,RWX;master OSD 裸盘 + LSO + StorageCluster)
 	$(PB) playbooks/72-day2-odf.yml
 
+shutdown:    ## 优雅关机:cert 窗口提醒 + etcd 备份 + worker先master后 ACPI 关机
+	$(PB) playbooks/97-shutdown.yml
+
 startup:     ## 开机/关机恢复:启动 VM + 批 CSR(证书过期)+ 等节点 Ready
 	$(PB) playbooks/98-startup.yml
 
@@ -54,6 +57,7 @@ demo:        ## 无云 hermetic:全 playbook 语法校验,不碰真主机/真 AP
 	ansible-playbook --syntax-check playbooks/70-day2-workers.yml
 	ansible-playbook --syntax-check playbooks/71-day2-storage-cnv.yml
 	ansible-playbook --syntax-check playbooks/72-day2-odf.yml
+	ansible-playbook --syntax-check playbooks/97-shutdown.yml
 	ansible-playbook --syntax-check playbooks/98-startup.yml
 	ansible-playbook --syntax-check playbooks/99-teardown.yml
 	@echo "✓ syntax OK — all phases parse"

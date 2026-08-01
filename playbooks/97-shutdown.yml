@@ -1,0 +1,108 @@
+---
+# Phase 97 — 优雅集群关机(make shutdown).98-startup 的对偶。
+#   ① cert 安全关机窗口提醒(关机 > 窗口会 brick;best-effort)。
+#   ② etcd 备份(关机前保险;etcd_backup=false 可跳)。
+#   ③ 按序优雅关 VM:★worker 先(停工作负载)→ master 后(etcd 最后干净停);virsh shutdown 走
+#      ACPI,让 guest OS + etcd/kubelet 干净落盘,而非硬断电。
+#   ④ 等所有 VM 下电。物理 host 断电默认交给人(不切自己 SSH);shutdown_hosts=true 时最后关(会失联)。
+#   前置:集群在线;节点 SSH 私钥 = ssh_pub_key_file 去掉 .pub。开机恢复:make startup(98)。
+
+- name: Phase 97a — 关机前:cert 窗口提醒 + etcd 备份
+  hosts: local
+  gather_facts: false
+  vars:
+    _node_key: "{{ ssh_pub_key_file | regex_replace('\\.pub$', '') }}"
+    _m0: "{{ (nodes | selectattr('role', 'equalto', 'master') | list | first).mip }}"
+    _ts: "{{ lookup('pipe', 'date +%Y%m%d-%H%M') }}"
+  tasks:
+    - name: cert 安全关机窗口提醒(best-effort)
+      ansible.builtin.command: "bash {{ playbook_dir }}/../tools/cert-status.sh"
+      environment:
+        KUBECONFIG: "{{ output_dir }}/kubeconfig"
+      register: _cw
+      changed_when: false
+      failed_when: false
+    - name: 显示窗口
+      ansible.builtin.debug:
+        msg: "{{ (_cw.stdout_lines | default([]) | select('search', '安全关机窗口|⚠️') | list) | default(['(cert-status 无输出)'], true) }}"
+
+    - name: etcd 备份(SSH master-0 core 跑 cluster-backup.sh)
+      ansible.builtin.command: >
+        ssh -i {{ _node_key }} -o BatchMode=yes -o StrictHostKeyChecking=no
+        -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 core@{{ _m0 }}
+        sudo /usr/local/bin/cluster-backup.sh /home/core/etcd-backup-{{ _ts }}
+      register: _bk
+      changed_when: _bk.rc == 0
+      failed_when: false
+      when: etcd_backup | default(true) | bool
+    - name: etcd 备份结果
+      ansible.builtin.debug:
+        msg: "etcd 备份:{{ 'OK → master-0:/home/core/etcd-backup-' + _ts if (_bk.rc | default(1)) == 0 else '失败(继续关机):' + (_bk.stderr | default('') | truncate(120)) }}"
+      when: etcd_backup | default(true) | bool
+
+- name: Phase 97b — 优雅关 worker VM(先停工作负载)
+  hosts: kvm_host
+  gather_facts: false
+  become: true
+  vars:
+    _w: "{{ nodes | selectattr('role', 'equalto', 'worker') | selectattr('host', 'equalto', inventory_hostname) | list }}"
+  tasks:
+    - name: virsh shutdown worker(ACPI)
+      ansible.builtin.command: "virsh -c qemu:///system shutdown {{ cluster_name }}-{{ item.name }}"
+      loop: "{{ _w }}"
+      loop_control:
+        loop_var: item
+        label: "{{ cluster_name }}-{{ item.name }}"
+      failed_when: false
+      changed_when: true
+      when: _w | length > 0
+    - name: 等 worker 全部下电
+      ansible.builtin.shell: "virsh -c qemu:///system list --state-running --name | grep -c '{{ cluster_name }}-worker' || true"
+      register: _wr
+      until: (_wr.stdout | trim | int) == 0
+      retries: 18
+      delay: 10
+      changed_when: false
+      when: _w | length > 0
+
+- name: Phase 97c — 优雅关 master VM(etcd 最后干净停)
+  hosts: kvm_host
+  gather_facts: false
+  become: true
+  vars:
+    _m: "{{ nodes | selectattr('role', 'equalto', 'master') | selectattr('host', 'equalto', inventory_hostname) | list }}"
+  tasks:
+    - name: virsh shutdown master(ACPI)
+      ansible.builtin.command: "virsh -c qemu:///system shutdown {{ cluster_name }}-{{ item.name }}"
+      loop: "{{ _m }}"
+      loop_control:
+        loop_var: item
+        label: "{{ cluster_name }}-{{ item.name }}"
+      failed_when: false
+      changed_when: true
+      when: _m | length > 0
+    - name: 等 master 全部下电(etcd 落盘)
+      ansible.builtin.shell: "virsh -c qemu:///system list --state-running --name | grep -c '{{ cluster_name }}-master' || true"
+      register: _mr
+      until: (_mr.stdout | trim | int) == 0
+      retries: 24
+      delay: 10
+      changed_when: false
+      when: _m | length > 0
+    - name: Phase 97 done
+      ansible.builtin.debug:
+        msg: >-
+          ✓ {{ inventory_hostname }}: {{ (_m | map(attribute='name') | join(', ')) | default('(无 master)', true) }} 已下电。
+          集群优雅关机完成;物理 host 可断电。开机恢复:make startup。
+      when: _m | length > 0
+
+- name: Phase 97d —(可选)关物理 host(shutdown_hosts=true;会失联,默认不做)
+  hosts: kvm_host
+  gather_facts: false
+  become: true
+  tasks:
+    - name: shutdown host(+1min 让 ansible 先断开)
+      ansible.builtin.command: "shutdown -h +1"
+      failed_when: false
+      changed_when: true
+      when: shutdown_hosts | default(false) | bool
