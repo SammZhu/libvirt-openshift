@@ -65,3 +65,8 @@
 ## 快速开始
 
 见 [QUICKSTART.md](QUICKSTART.md)。最短路径:`make preflight` → 逐 phase → `make install`。
+
+## 运维
+
+日常操作(关机/开机、证书安全关机窗口、Day2 存储/CNV/ODF、故障恢复)见 **[docs/OPERATIONS.md](docs/OPERATIONS.md)** 速查。
+全生命周期:`install → add-workers → storage-cnv → odf → shutdown ⇄ startup → teardown`。
