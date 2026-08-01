@@ -99,6 +99,29 @@
       failed_when: false
       register: _certwin
 
+    - name: 窗口 < rotate_below_days 天则自动轮转控制面证书重置窗口(默认 5;0=关)
+      # 针对"平时关机、偶尔开机"模式:每次开机若安全关机窗口已危险,主动把控制面 serving
+      # 证书轮转回 ~30 天,让后续关机都安全(运行中集群 operator 本会自动轮转,这里是兜底)。
+      # 会滚动重启控制面(~10-15min);rotate_below_days=0 可关。
+      ansible.builtin.shell: |
+        set -o pipefail
+        export KUBECONFIG={{ output_dir }}/kubeconfig
+        thr={{ rotate_below_days | default(5) }}
+        [ "$thr" -le 0 ] && { echo "自动轮转已关(rotate_below_days=0)"; exit 0; }
+        days=$(bash {{ playbook_dir }}/../tools/cert-status.sh 2>/dev/null | grep '安全关机窗口' | grep -oE '[0-9]+' | head -1)
+        [ -z "$days" ] && { echo "拿不到窗口天数,跳过自动轮转"; exit 0; }
+        if [ "$days" -lt "$thr" ]; then
+          echo "★ 安全关机窗口 $days 天 < $thr → 自动轮转控制面 serving 证书重置窗口(滚动重启控制面)"
+          AUTO_CONFIRM=1 bash {{ playbook_dir }}/../tools/rotate-cp-certs.sh 2>&1 | tail -10
+        else
+          echo "窗口 $days 天 ≥ $thr,无需轮转"
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: true
+      failed_when: false
+      register: _autorotate
+
     - name: Phase 98 done
       ansible.builtin.debug:
-        msg: "{{ _final.stdout_lines + ['--- OVN 诊断钩子 ---'] + (_ovndiag.stdout_lines | default([])) + ['--- 证书窗口 ---'] + (_certwin.stdout_lines | default([])) }}"
+        msg: "{{ _final.stdout_lines + ['--- OVN 诊断钩子 ---'] + (_ovndiag.stdout_lines | default([])) + ['--- 证书窗口 ---'] + (_certwin.stdout_lines | default([])) + ['--- 自动轮转 ---'] + (_autorotate.stdout_lines | default([])) }}"

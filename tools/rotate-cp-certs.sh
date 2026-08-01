@@ -18,8 +18,13 @@ echo "== 轮转前窗口 =="; bash "$HERE/cert-status.sh" 2>/dev/null | grep -E 
 echo ""
 echo "将删除并让 operator 重发以下 kube-apiserver serving 证书(会滚动重启 3 master 的 apiserver):"
 for s in $SECRETS; do echo "  - $NS/$s"; done
-read -r -p "确认继续?(输入 yes 执行,其它取消) " ans || { echo "非交互,取消"; exit 0; }
-[ "$ans" = "yes" ] || { echo "已取消"; exit 0; }
+# 非交互模式(供 98-startup 自动调用):AUTO_CONFIRM=1 或首参 --yes 跳过确认
+if [ "${AUTO_CONFIRM:-0}" = "1" ] || [ "${1:-}" = "--yes" ]; then
+  echo "(AUTO_CONFIRM:自动确认继续)"
+else
+  read -r -p "确认继续?(输入 yes 执行,其它取消) " ans || { echo "非交互,取消(如需自动:AUTO_CONFIRM=1)"; exit 0; }
+  [ "$ans" = "yes" ] || { echo "已取消"; exit 0; }
+fi
 
 REV0=$($O get kubeapiserver cluster -o jsonpath='{.status.latestAvailableRevision}' 2>/dev/null || echo 0)
 echo "当前 kube-apiserver revision=$REV0"
