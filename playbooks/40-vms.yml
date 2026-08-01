@@ -52,8 +52,17 @@
       register: _mk
       changed_when: _mk.rc == 0
 
+    - name: 启用 libvirt-guests(主机 halt/poweroff 时先优雅 ACPI 关 VM,避免 etcd unclean + ODF OSD id-mismatch)
+      ansible.builtin.shell: |
+        f=/etc/sysconfig/libvirt-guests
+        for kv in "ON_BOOT=ignore" "ON_SHUTDOWN=shutdown" "SHUTDOWN_TIMEOUT=300" "PARALLEL_SHUTDOWN=3" "URIS=qemu:///system"; do
+          k=${kv%%=*}; sed -i "/^#\?${k}=/d" "$f" 2>/dev/null; echo "$kv" >> "$f"
+        done
+        systemctl enable --now libvirt-guests
+      changed_when: true
+
     - name: Phase 40 done
       ansible.builtin.debug:
         msg: >-
           ✓ {{ inventory_hostname }}: {{ (install_nodes | selectattr('host', 'equalto', inventory_hostname) | list) | map(attribute='name') | join(', ') }}
-          已定义/启动(双网卡钉 MAC,静态 IP 由 ISO NMState 下发)→ Phase 50 看注册
+          已定义/启动(双网卡钉 MAC,静态 IP 由 ISO NMState 下发);libvirt-guests 已启用(halt 时优雅关 VM)→ Phase 50 看注册
