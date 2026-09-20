@@ -26,7 +26,9 @@ all:
           workers_here: 0
           nested_required: false        # CNV 不在这跑
           vm_pool: default              # ← 真实 libvirt pool 名(本机可能叫 VMs/images)
-          osd_disks: []                 # ← ODF OSD 用的整块裸盘, e.g. [/dev/nvme1n1, ...] 每 master 一块
+          osd_disks: []                 # ← ODF OSD 整块裸盘,每 master 一块。★必须用稳定标识路径(preflight 强制):
+                                        #   /dev/disk/by-id/nvme-...<serial>(查 ls -l /dev/disk/by-id/)。
+                                        #   别用 /dev/nvmeXn1、/dev/sdX——宿主重启后重枚举会指到别的盘(实测漂到过存储池盘)。
           storage_bridge: br-ovs        # 10G 存储/迁移网 OVS 桥
         # ── CNV 计算 host(按需开,省电)──
         kvmhost-cnv:

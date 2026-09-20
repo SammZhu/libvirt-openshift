@@ -54,6 +54,20 @@ install_disk_name:    vda
 #   企业级带 PLP 的 SSD 可用 none/writeback。lab 用 unsafe(断电丢最近写,可接受)。
 disk_cache:           unsafe
 
+# ── 节点表(每节点静态 IP + 钉死 MAC;masters 带 osd 裸盘直通)──────────────────
+# MAC 供 assisted static_network_config 对应;IP 由 infra-env NMState 静态下发。
+# ★osd:master 的 ODF OSD 盘,virt-install 裸盘直通(--disk path=)。**必须用稳定标识路径**:
+#   /dev/disk/by-id/nvme-...<serial> 或 /dev/disk/by-path/...(查 ls -l /dev/disk/by-id/)。
+#   ⚠️ 别用 /dev/nvmeXn1、/dev/sdX——那是内核枚举名,宿主重启后会变:同一 /dev/nvme1n1 可能
+#   指到另一块物理盘。实测(2026-09-20)重启后 master 的 osd 直通从 OSD 盘漂到了存 VM 镜像的
+#   存储池盘(xfs),差点被当 OSD 擦掉(→整池 qcow2 全毁)。00-preflight 已强制 by-id/by-path。
+nodes:
+  - {name: master-0, role: master, host: kvmhost-cp, mip: 192.168.1.210, sip: 10.10.0.10, mmac: "52:54:00:6e:65:10", smac: "52:54:00:6e:65:20", osd: /dev/disk/by-id/nvme-<厂商型号>_<serial-0>}
+  - {name: master-1, role: master, host: kvmhost-cp, mip: 192.168.1.211, sip: 10.10.0.11, mmac: "52:54:00:6e:65:11", smac: "52:54:00:6e:65:21", osd: /dev/disk/by-id/nvme-<厂商型号>_<serial-1>}
+  - {name: master-2, role: master, host: kvmhost-cp, mip: 192.168.1.212, sip: 10.10.0.12, mmac: "52:54:00:6e:65:12", smac: "52:54:00:6e:65:22", osd: /dev/disk/by-id/nvme-<厂商型号>_<serial-2>}
+  - {name: worker-0, role: worker, host: kvmhost-cnv, mip: 192.168.1.213, sip: 10.10.0.13, mmac: "52:54:00:6e:65:13", smac: "52:54:00:6e:65:23"}
+  - {name: worker-1, role: worker, host: kvmhost-cnv, mip: 192.168.1.214, sip: 10.10.0.14, mmac: "52:54:00:6e:65:14", smac: "52:54:00:6e:65:24"}
+
 # ── OpenShift 集群网络 / ISO(Phase 20/30 用)──────────────────────────────────
 network_type:            OVNKubernetes
 cluster_network_cidr:    10.128.0.0/14

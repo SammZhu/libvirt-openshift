@@ -137,6 +137,23 @@
           {{ inventory_hostname }} 容量不足:need {{ _need_vcpu }} vCPU / {{ _need_ram }} MiB,
           have {{ ansible_processor_vcpus }} vCPU / {{ ansible_memtotal_mb }} MiB。
 
+    # ★OSD 盘必须用稳定标识路径(/dev/disk/by-id|by-path),不能用 /dev/nvmeXn1、/dev/sdX 等内核名。
+    #   内核名不稳定:宿主重启后 NVMe/SCSI 重枚举,同一 /dev/nvme1n1 可能指到别的物理盘。
+    #   实测(2026-09-20)重启后 master 的 osd 直通从 OSD 盘漂到了存 VM 镜像的存储池盘(xfs),
+    #   幸亏 ODF 探到文件系统主动跳过才没被当 OSD 擦掉——否则整池 qcow2 全毁。故此闸静态拦不稳定名。
+    - name: 断言 OSD 盘用稳定标识路径(by-id/by-path,非内核名)
+      ansible.builtin.assert:
+        that:
+          - item is match('^/dev/disk/by-(id|path)/')
+        fail_msg: >-
+          osd_disks 里 '{{ item }}' 是不稳定的内核设备名。宿主重启后设备会重枚举,该路径可能指向
+          别的物理盘(实测曾指到存 VM 镜像的存储池盘)。请改用稳定标识:
+          /dev/disk/by-id/nvme-...<serial>(查:ls -l /dev/disk/by-id/ | grep <盘>)或 /dev/disk/by-path/...。
+        success_msg: "OSD 盘 {{ item }} 用了稳定标识路径 ✓"
+      loop: "{{ osd_disks | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+
     - name: 检查 ODF OSD 裸盘(control-storage host)
       ansible.builtin.command: "lsblk -pno NAME,FSTYPE,MOUNTPOINT {{ item }}"
       changed_when: false

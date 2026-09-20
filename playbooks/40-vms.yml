@@ -1,6 +1,7 @@
 ---
 # Phase 40 — virt-install 起 OpenShift 节点 VM(B 方案:节点表驱动 + 双网卡钉 MAC).
 #   节点来自 group_vars `nodes`(按 host 过滤):master 在 rhdemo(OSD 裸盘直通),worker 在 rhel10(host-passthrough+LVMS)。
+#   ★node.osd 必须是稳定标识路径(/dev/disk/by-id|by-path)——内核名 /dev/nvmeXn1 宿主重启会重枚举漂到别的盘(00-preflight 已拦)。
 #   两网卡钉死 MAC:eth0=machine(macvtap→machine_nic,node.mmac)/ eth1=storage(br-ovs 10G,node.smac);
 #   MAC 与 infra-env static_network_config(Phase 25)对应,静态 IP 由 ISO 内 NMState 下发。
 #   --boot hd,cdrom(空盘→先引导 ISO,装完→引导硬盘)。幂等:同名域存在则跳过。
